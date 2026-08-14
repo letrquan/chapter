@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/mark-1024.png" alt="" width="120" />
+</p>
+
 # Chapter
 
 A single-window desktop app for reviewing AI-agent work across git worktrees.
@@ -104,6 +108,19 @@ guessing — a wrong jump is worse than a short list.
 **Untracked files are merged into the changed set.** `git diff` alone omits them, and new
 files are usually the most important thing an agent produced.
 
+**Markdown gets a third view.** `.md`, `.markdown` and `.mdx` files add a **Preview** mode
+beside Diff and Code (`Ctrl` `Shift` `V`). Opening a file from the changed list still starts
+in Diff — you are reviewing a change — while navigating to one with `Ctrl` `P` or by
+following a link opens the rendered document, because then you are reading it.
+
+Markdown in a worktree is untrusted input: an agent wrote it, and it can carry raw HTML,
+`javascript:` links, and paths pointing anywhere on disk. Rendering is layered accordingly
+— `marked` produces the HTML, DOMPurify strips anything executable, the page's CSP blocks
+whatever survives, and image paths are resolved by the backend, which refuses anything
+outside the worktree. Local images are inlined as data URIs; anything that cannot be
+supplied renders a labelled placeholder saying why, rather than a broken-image icon.
+Fenced code is highlighted by Monaco, which is already loaded.
+
 **Four scopes, not one.** The switch above the file list picks which comparison you are
 looking at:
 
@@ -134,6 +151,7 @@ providers for it. Nothing above that seam is C#-specific.
 | `F12` | Go to definition (C#) |
 | `Shift` `F12` | Find usages (C#) |
 | `Ctrl` `D` | Toggle diff / code |
+| `Ctrl` `Shift` `V` | Toggle Markdown preview |
 | `Ctrl` `PgUp` `PgDn` | Cycle tabs |
 | `Ctrl` `W` | Close tab |
 | `Ctrl` `R` | Refresh |
