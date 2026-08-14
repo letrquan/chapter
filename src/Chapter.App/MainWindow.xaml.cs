@@ -130,6 +130,17 @@ public partial class MainWindow : Window
             OpenExternally(args.Uri);
         };
 
+        // Same rule for same-window navigation. A link in a rendered Markdown document is
+        // content an agent wrote; without this, clicking one replaces the entire UI with
+        // a web page and there is no way back.
+        core.NavigationStarting += (_, args) =>
+        {
+            if (args.Uri.StartsWith($"https://{VirtualHost}/", StringComparison.OrdinalIgnoreCase)) return;
+
+            args.Cancel = true;
+            OpenExternally(args.Uri);
+        };
+
         core.Navigate($"https://{VirtualHost}/index.html");
     }
 
