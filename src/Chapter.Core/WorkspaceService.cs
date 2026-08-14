@@ -184,6 +184,76 @@ public sealed class WorkspaceService(GitCli git)
         };
     }
 
+    /// <summary>
+    /// Image extensions the preview will inline. Anything else is refused rather than
+    /// guessed at — an unknown type served under a wrong MIME is worse than a placeholder.
+    /// </summary>
+    private static readonly Dictionary<string, string> InlineableImages = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".png"] = "image/png",
+        [".jpg"] = "image/jpeg",
+        [".jpeg"] = "image/jpeg",
+        [".gif"] = "image/gif",
+        [".webp"] = "image/webp",
+        [".avif"] = "image/avif",
+        [".bmp"] = "image/bmp",
+        [".ico"] = "image/x-icon",
+        // Safe here specifically because it is rendered inside <img>, where browsers
+        // disable scripting for SVG. Never inline one into the document itself.
+        [".svg"] = "image/svg+xml",
+    };
+
+    /// <summary>Images above this are linked, not inlined — base64 adds a third again on top.</summary>
+    private const long MaxInlineBytes = 4 * 1024 * 1024;
+
+    /// <summary>
+    /// Reads an image referenced by a Markdown file and returns it as a data URI.
+    ///
+    /// Every failure is reported rather than thrown: a preview with one missing image
+    /// should still render, showing a placeholder where that image belongs.
+    /// </summary>
+    public static async Task<AssetPayload> GetAssetAsync(
+        string worktreePath, string repoRelativePath, CancellationToken ct = default)
+    {
+        string absolute;
+        try
+        {
+            // Throws for anything escaping the worktree — a Markdown file is untrusted
+            // input, and `![](../../../../Windows/win.ini)` is a plausible thing to find
+            // in a file an agent wrote.
+            absolute = RepoPaths.Resolve(worktreePath, repoRelativePath);
+        }
+        catch (ArgumentException)
+        {
+            return new AssetPayload { Path = repoRelativePath, Reason = "outside the worktree" };
+        }
+
+        var extension = Path.GetExtension(absolute);
+        if (!InlineableImages.TryGetValue(extension, out var mediaType))
+            return new AssetPayload { Path = repoRelativePath, Reason = "unsupported image type" };
+
+        var info = new FileInfo(absolute);
+        if (!info.Exists)
+            return new AssetPayload { Path = repoRelativePath, Reason = "not found" };
+
+        if (info.Length > MaxInlineBytes)
+            return new AssetPayload { Path = repoRelativePath, Reason = "too large to preview" };
+
+        try
+        {
+            var bytes = await File.ReadAllBytesAsync(absolute, ct).ConfigureAwait(false);
+            return new AssetPayload
+            {
+                Path = repoRelativePath,
+                DataUri = $"data:{mediaType};base64,{Convert.ToBase64String(bytes)}",
+            };
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new AssetPayload { Path = repoRelativePath, Reason = "could not be read" };
+        }
+    }
+
     private async Task<FileContent> ContentAtScopeEndAsync(
         string worktreePath, string repoRelativePath, DiffScope scope, CancellationToken ct)
     {

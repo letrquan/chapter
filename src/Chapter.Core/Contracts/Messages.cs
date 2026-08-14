@@ -134,6 +134,21 @@ public sealed record FileContentPayload
     public bool IsBinary { get; init; }
 }
 
+/// <summary>
+/// An image referenced by a Markdown document, inlined for the preview.
+///
+/// The page is served from a virtual host with a strict CSP, so it cannot read files off
+/// disk — the backend has to hand the bytes over. <see cref="DataUri"/> is null when the
+/// asset could not be supplied, with <see cref="Reason"/> saying why so the preview can
+/// render an honest placeholder rather than a broken image.
+/// </summary>
+public sealed record AssetPayload
+{
+    public required string Path { get; init; }
+    public string? DataUri { get; init; }
+    public string? Reason { get; init; }
+}
+
 /// <summary>A place in the code — the unit of every navigation result.</summary>
 public sealed record SymbolLocation
 {

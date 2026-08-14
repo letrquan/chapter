@@ -121,6 +121,8 @@ public sealed class BridgeDispatcher(WorkspaceService workspace, AppSettings set
 
         "getFileContent" => await GetFileContentAsync(request.ParamsAs<FileRequest>(), ct).ConfigureAwait(false),
 
+        "getAsset" => await GetAssetAsync(request.ParamsAs<FileRequest>(), ct).ConfigureAwait(false),
+
         "getSettings" => Settings,
 
         "pickFolder" => FolderPicker is null ? null : await FolderPicker().ConfigureAwait(false),
@@ -279,6 +281,9 @@ public sealed class BridgeDispatcher(WorkspaceService workspace, AppSettings set
 
     private async Task<object> GetFileContentAsync(FileRequest req, CancellationToken ct) =>
         await Workspace.GetFileContentAsync(req.WorktreePath, req.Path, req.Scope, ct).ConfigureAwait(false);
+
+    private static async Task<object> GetAssetAsync(FileRequest req, CancellationToken ct) =>
+        await WorkspaceService.GetAssetAsync(req.WorktreePath, req.Path, ct).ConfigureAwait(false);
 
     /// <summary>
     /// Resolves a path to the worktree git reports for it, so branch name and prunable
