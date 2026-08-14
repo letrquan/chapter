@@ -19,6 +19,7 @@ import { call, on, isHosted } from './bridge'
 import { icons, kindLetter } from './icons'
 import { registerCSharpNavigation, setNavigateHandler } from './navigation'
 import { openPalette, close as closePalette, isOpen as isPaletteOpen } from './palette'
+import { renderPreview, cancelPreview } from './preview'
 import type { ChangedFile, DiffScope, RepoInfo, Worktree, WorktreeChanges } from './protocol'
 
 /* ==========================================================================
@@ -28,7 +29,10 @@ import type { ChangedFile, DiffScope, RepoInfo, Worktree, WorktreeChanges } from
    point of the app: switching worktrees must not disturb what you had open.
    ========================================================================== */
 
-type Mode = 'diff' | 'code'
+type Mode = 'diff' | 'code' | 'preview'
+
+/** Preview only applies where there is something to render. */
+const isPreviewable = (path: string): boolean => /\.(md|markdown|mdx)$/i.test(path)
 
 interface TabState {
   path: string
@@ -182,12 +186,14 @@ function renderShell(): void {
                 <div class="segmented" id="mode-switch">
                   <button data-mode="diff" class="on">Diff</button>
                   <button data-mode="code">Code</button>
+                  <button data-mode="preview" id="mode-preview" hidden>Preview</button>
                 </div>
                 <button class="icon-btn" id="split-toggle" title="Toggle inline / side-by-side">${icons.diff}</button>
                 <button class="icon-btn" id="open-external" title="Open in external editor">${icons.external}</button>
               </div>
             </div>
             <div class="editor-host" id="editor-host">
+              <div class="markdown-preview" id="preview-host" hidden></div>
               <div class="placeholder" id="editor-empty">${EMPTY_STATE_HTML}</div>
             </div>
           </section>
@@ -425,6 +431,11 @@ function renderModeSwitch(): void {
   for (const button of document.querySelectorAll<HTMLElement>('#mode-switch button')) {
     button.classList.toggle('on', button.dataset.mode === mode)
   }
+
+  // Preview is offered only where there is something to render, rather than
+  // sitting there disabled on every C# file.
+  const preview = document.getElementById('mode-preview')
+  if (preview) preview.hidden = !(tab && isPreviewable(tab.path))
 }
 
 /* ==========================================================================
@@ -649,6 +660,25 @@ async function loadTabContent(worktreePath: string, tab: TabState): Promise<void
     worktreeState(worktreePath).activePath === tab.path
 
   try {
+    if (tab.mode === 'preview') {
+      const file = await call('getFileContent', { worktreePath, path: tab.path, scope: state.scope })
+      if (!current()) return
+
+      showPreview(true)
+      showEmptyState(false)
+      showMode('preview')
+
+      await renderPreview(document.getElementById('preview-host')!, {
+        worktreePath,
+        path: tab.path,
+        source: file.text,
+        onNavigate: (target) => void navigateTo(worktreePath, target, 1, 1),
+      })
+      return
+    }
+
+    showPreview(false)
+
     if (tab.mode === 'diff') {
       const diff = await call('getDiff', { worktreePath, path: tab.path, scope: state.scope })
       if (!current()) return
@@ -714,8 +744,24 @@ function showEmptyState(visible: boolean): void {
   const empty = document.getElementById('editor-empty')
   if (!empty) return
 
-  if (visible) empty.innerHTML = EMPTY_STATE_HTML
+  if (visible) {
+    empty.innerHTML = EMPTY_STATE_HTML
+    showPreview(false)
+  }
   empty.style.display = visible ? 'grid' : 'none'
+}
+
+function showPreview(visible: boolean): void {
+  const host = document.getElementById('preview-host')
+  if (!host) return
+
+  host.hidden = !visible
+
+  // Abandon any in-flight image resolution or syntax colouring; its DOM is gone.
+  if (!visible) {
+    cancelPreview()
+    host.innerHTML = ''
+  }
 }
 
 /**
@@ -1032,11 +1078,20 @@ function wireKeyboard(): void {
       return
     }
 
-    if (ctrl && event.key.toLowerCase() === 'd') {
+    if (ctrl && !event.shiftKey && event.key.toLowerCase() === 'd') {
       event.preventDefault()
       const entry = state.active ? worktreeState(state.active) : null
       const tab = entry?.tabs.find((t) => t.path === entry.activePath)
       void setMode(tab?.mode === 'diff' ? 'code' : 'diff')
+      return
+    }
+
+    // Ctrl+Shift+V — the shortcut people already have in their fingers from VS Code.
+    if (ctrl && event.shiftKey && event.key.toLowerCase() === 'v') {
+      event.preventDefault()
+      const entry = state.active ? worktreeState(state.active) : null
+      const tab = entry?.tabs.find((t) => t.path === entry.activePath)
+      if (tab && isPreviewable(tab.path)) void setMode(tab.mode === 'preview' ? 'diff' : 'preview')
       return
     }
 
@@ -1093,9 +1148,11 @@ async function navigateTo(
   const entry = worktreeState(worktreePath)
   const existing = entry.tabs.find((t) => t.path === path)
 
-  // Definitions are about reading code, not reviewing a change, so land in code view
-  // unless the file is already open in diff view.
-  await openFile(path, existing?.mode ?? 'code')
+  // Navigating to a file is about reading it, not reviewing a change — so land in code
+  // view, or the rendered document for Markdown. Opening the same file from the changed
+  // list still starts in diff, which is the right default when reviewing.
+  const fresh: Mode = isPreviewable(path) ? 'preview' : 'code'
+  await openFile(path, existing?.mode ?? fresh)
 
   const tab = entry.tabs.find((t) => t.path === path)
   revealPosition(tab?.mode ?? 'code', line, column)

@@ -10,6 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "dompurify": "^3.4.13",
+    "marked": "^18.0.9",
     "monaco-editor": "^0.56.0"
   },
   "devDependencies": {

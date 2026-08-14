@@ -229,12 +229,14 @@ export function initEditors(container: HTMLElement): void {
   showMode('diff')
 }
 
-export function showMode(mode: 'diff' | 'code'): void {
+/** 'preview' hides both editors — the Markdown preview owns the pane instead. */
+export function showMode(mode: 'diff' | 'code' | 'preview'): void {
   codeHost.style.display = mode === 'code' ? 'block' : 'none'
   diffHost.style.display = mode === 'diff' ? 'block' : 'none'
+
   // A hidden Monaco instance skips layout, so it needs one on the way back in.
   if (mode === 'code') codeEditor?.layout()
-  else diffEditor?.layout()
+  else if (mode === 'diff') diffEditor?.layout()
 }
 
 export function setTheme(theme: 'dark' | 'light'): void {
@@ -265,8 +267,10 @@ export function showCode(worktreePath: string, path: string, text: string, langu
   codeEditor.layout()
 }
 
-/** Moves the caret to a line and scrolls it into view, centred. */
-export function revealPosition(mode: 'diff' | 'code', line: number, column = 1): void {
+/** Moves the caret to a line and scrolls it into view, centred. No-op in preview. */
+export function revealPosition(mode: 'diff' | 'code' | 'preview', line: number, column = 1): void {
+  if (mode === 'preview') return
+
   const target = mode === 'diff' ? diffEditor?.getModifiedEditor() : codeEditor
   if (!target) return
 
@@ -276,7 +280,9 @@ export function revealPosition(mode: 'diff' | 'code', line: number, column = 1):
 }
 
 /** Line the caret currently sits on, for jumping from the diff into the full file. */
-export function currentLine(mode: 'diff' | 'code'): number {
+export function currentLine(mode: 'diff' | 'code' | 'preview'): number {
+  if (mode === 'preview') return 1
+
   const target = mode === 'diff' ? diffEditor?.getModifiedEditor() : codeEditor
   return target?.getPosition()?.lineNumber ?? 1
 }

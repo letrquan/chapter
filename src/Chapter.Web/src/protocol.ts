@@ -87,6 +87,13 @@ export interface FileContentPayload {
   isBinary: boolean
 }
 
+export interface AssetPayload {
+  path: string
+  /** Populated when the image could be inlined; null with a `reason` otherwise. */
+  dataUri: string | null
+  reason: string | null
+}
+
 export interface SymbolLocation {
   path: string
   line: number
@@ -133,6 +140,10 @@ export interface Api {
   getFileContent: {
     params: { worktreePath: string; path: string; scope: DiffScope }
     result: FileContentPayload
+  }
+  getAsset: {
+    params: { worktreePath: string; path: string; scope: DiffScope }
+    result: AssetPayload
   }
   getSettings: { params: void; result: AppSettings }
   pickFolder: { params: void; result: string | null }
