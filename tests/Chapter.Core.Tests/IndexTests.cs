@@ -135,10 +135,20 @@ public class FuzzyMatcherTests
 }
 
 /// <summary>
+/// Marks the tests whose assertions are wall-clock time and process memory. xUnit runs
+/// collections in parallel by default, which means these would otherwise be timed while
+/// competing for the same cores and disk as every other test — they failed exactly that
+/// way, and the numbers halve when run alone.
+/// </summary>
+[CollectionDefinition("Performance", DisableParallelization = true)]
+public class PerformanceCollection;
+
+/// <summary>
 /// Index behaviour and performance against real repositories. The timing assertions are
 /// the point of the design — a syntactic index only earns its keep if it is fast enough
 /// that navigation feels instant.
 /// </summary>
+[Collection("Performance")]
 public class WorkspaceIndexTests
 {
     private const string HeatRepo = @"I:\MyProject\02-AI-ML-Projects\heat";
