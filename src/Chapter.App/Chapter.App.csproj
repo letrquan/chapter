@@ -1,0 +1,50 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Chapter.Core\Chapter.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    Copy the built front-end into the output as wwwroot.
+
+    Without this a non-Debug build has no UI at all: ResolveWebRoot only walks up to
+    src/Chapter.Web/dist under #if DEBUG, and otherwise looks for a wwwroot beside the
+    executable that nothing was producing.
+
+    The item is declared inside the target rather than at project scope so the glob is
+    evaluated after a build, not when the project is first loaded — otherwise a clean
+    checkout that runs `npm run build` and `dotnet build` in one go copies nothing.
+  -->
+  <Target Name="CopyWebAssets" AfterTargets="Build;Publish">
+    <ItemGroup>
+      <WebAssets Include="$(MSBuildThisFileDirectory)..\Chapter.Web\dist\**\*" />
+    </ItemGroup>
+
+    <Warning Condition="'@(WebAssets)' == ''"
+             Code="CHAPTER001"
+             Text="No front-end found at src/Chapter.Web/dist. Run 'npm install &amp;&amp; npm run build' in src/Chapter.Web, or the app will start with no user interface." />
+
+    <Copy SourceFiles="@(WebAssets)"
+          DestinationFolder="$(OutDir)wwwroot\%(RecursiveDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(WebAssets)' != ''" />
+
+    <Copy SourceFiles="@(WebAssets)"
+          DestinationFolder="$(PublishDir)wwwroot\%(RecursiveDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(WebAssets)' != '' And '$(PublishDir)' != ''" />
+  </Target>
+
+</Project>
