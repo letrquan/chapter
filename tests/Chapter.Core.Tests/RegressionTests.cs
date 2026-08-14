@@ -266,6 +266,68 @@ public class RegressionTests
         Assert.StartsWith(@"C:\worktree\", resolved);
     }
 
+    /// <summary>
+    /// Markdown in a worktree is untrusted — an agent wrote it. An image reference is a
+    /// path the document controls, so the asset endpoint is a read primitive pointed at
+    /// arbitrary input and has to refuse everything outside the worktree.
+    /// </summary>
+    [Fact]
+    public async Task Preview_assets_refuse_paths_outside_the_worktree()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "chapter-asset-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(Path.Combine(root, "docs"));
+
+        try
+        {
+            foreach (var escape in new[] { "../../../../Windows/win.ini", @"C:\Windows\win.ini" })
+            {
+                var refused = await WorkspaceService.GetAssetAsync(root, escape);
+                Assert.Null(refused.DataUri);
+                Assert.Equal("outside the worktree", refused.Reason);
+            }
+        }
+        finally
+        {
+            Delete(root);
+        }
+    }
+
+    [Fact]
+    public async Task Preview_assets_inline_images_and_explain_what_they_cannot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "chapter-asset-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(Path.Combine(root, "docs"));
+
+        try
+        {
+            // A one-pixel PNG is enough to prove the round-trip and the media type.
+            byte[] png =
+            [
+                0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+                0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+                0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
+            ];
+            await File.WriteAllBytesAsync(Path.Combine(root, "docs", "diagram.png"), png);
+            await File.WriteAllTextAsync(Path.Combine(root, "docs", "notes.txt"), "not an image");
+
+            var inlined = await WorkspaceService.GetAssetAsync(root, "docs/diagram.png");
+            Assert.NotNull(inlined.DataUri);
+            Assert.StartsWith("data:image/png;base64,", inlined.DataUri);
+
+            // Every refusal carries a reason, so the preview can say why rather than
+            // rendering a broken-image glyph.
+            var missing = await WorkspaceService.GetAssetAsync(root, "docs/absent.png");
+            Assert.Equal("not found", missing.Reason);
+
+            var wrongType = await WorkspaceService.GetAssetAsync(root, "docs/notes.txt");
+            Assert.Equal("unsupported image type", wrongType.Reason);
+        }
+        finally
+        {
+            Delete(root);
+        }
+    }
+
     [Fact]
     public async Task Unknown_scope_values_do_not_crash_the_dispatcher()
     {
