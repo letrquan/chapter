@@ -12,7 +12,10 @@ a persistent rail, instant switching with your tabs and scroll position intact, 
 side-by-side diff, and go-to-definition for C#. When you actually want to *change*
 something, one keystroke opens the file at that exact line in Rider or VS Code.
 
-It is a review cockpit, not an IDE. Nothing here writes to your files.
+Review is the point, but you can also act on what you find: stage by file, hunk or line,
+discard, edit, and commit — without leaving the window or losing which worktree you were in.
+
+It is a review cockpit, not an IDE.
 
 ## Requirements
 
@@ -137,6 +140,42 @@ so you can see what is still dirty without switching. Changing scope re-reads ev
 worktree, because these are genuinely different git comparisons rather than filters over
 one result.
 
+**Committing lives in the Uncommitted scope**, not behind a switch of its own. The scope
+selector answers "which slice of the work", and staged-versus-unstaged is not another slice
+— it is the same slice divided by the index. Choosing **Uncommitted** turns the file list
+into two groups with a commit box below them.
+
+That view is read from `git diff --cached` and `git diff` directly rather than derived from
+the review scan, because the two genuinely disagree: a file you staged and then deleted from
+disk appears in neither the branch diff nor the working tree, and committing still includes
+it. A commit box that inferred its contents would quietly omit it.
+
+**Patches come from git, never from the editor.** Staging a hunk means building a partial
+patch, and the only safe source for one is git's own `diff` output. Under `core.autocrlf`
+the working tree holds CRLF while the index holds LF, so a patch generated from the text
+Monaco is displaying either fails to apply or applies and rewrites every line ending in the
+file. For the same reason the staging controls are drawn from git's hunk boundaries rather
+than Monaco's — Monaco computes its own diff and groups changes differently, and a button
+anchored to the wrong grouping stages something you never looked at.
+
+Because an agent may be writing to the same worktree, a hunk selection carries a fingerprint
+of the diff it was made against. If the file changed in between, the stage is refused rather
+than applied to whatever hunk now sits at that index.
+
+**Nothing destructive happens without saying whether it can be undone.** One confirmation
+dialog covers all of it, and it states recoverability every time rather than relying on a
+red button to imply it. Discarding is *permanent* and says so — working-tree content that
+was never staged is in no git object, so the reflog cannot bring it back. Committing is not:
+undo is offered straight afterwards, labelled with what it would reverse, and it refuses if
+anything else has committed in that worktree since.
+
+**Editing is conditional, and unsaved work is never overwritten.** The diff stays read-only
+— its left pane is a commit — while the code view becomes editable when the backend confirms
+the file can be written back with its encoding and line endings intact. The app reloads the
+open file whenever the watcher fires, which was correct while nothing was editable and
+destructive the moment something was; a model with unsaved edits is now left alone and you
+are told the file changed underneath you.
+
 **Adding another language** means implementing `ILanguageIndexer` and registering Monaco
 providers for it. Nothing above that seam is C#-specific.
 
@@ -155,10 +194,44 @@ providers for it. Nothing above that seam is C#-specific.
 | `Ctrl` `PgUp` `PgDn` | Cycle tabs |
 | `Ctrl` `W` | Close tab |
 | `Ctrl` `R` | Refresh |
+| `Ctrl` `S` | Save the open file |
+| `Ctrl` `Enter` | Commit (from the message box) |
+| `Alt` `↑` `↓` | Previous / next hunk |
+| `Ctrl` `Alt` `Z` | Undo the last git operation |
+
+`Ctrl` `Z` is deliberately left to Monaco, where it means "undo my typing". Rewinding a
+commit is a much larger action and gets its own binding.
+
+## Commit message conventions
+
+Off by default beyond the two rules git's own tooling assumes — a short subject and a blank
+second line. Conventional-commit validation is opt-in per repository, because it is house
+style in some projects and noise in others:
+
+```jsonc
+// %LOCALAPPDATA%\Chapter\settings.json
+"commitPolicies": {
+  "I:\\path\\to\\repo": {
+    "requireConventionalCommit": true,
+    "types": ["feat", "fix", "docs", "refactor", "test", "chore"],
+    "subjectLimit": 72
+  }
+}
+```
+
+Worktrees inherit their repository's entry. Nothing here ever blocks a commit — these are
+conventions, and an app that refuses on its own reading of one is an app that stops you
+committing during an incident because the subject ran to 74 characters.
+
+Signing is left to the repository's `commit.gpgsign`. Passing `--no-gpg-sign` on your behalf
+would produce unsigned commits on a branch that requires them.
 
 ## Not in this version
 
-No editing or saving · no build or test runner · no stage/commit/merge · no worktree
-create or delete · no cross-worktree comparison · no semantic (MSBuild) engine · no
-semantic navigation for languages other than C# — diff and browse work for everything
-Monaco tokenises.
+No build or test runner · no branch, stash or tag management · no fetch/pull/push · no
+merge or rebase · no conflict-resolution UI beyond detecting and listing conflicted files ·
+no history or blame view · no worktree create or delete · no cross-worktree comparison · no
+AI-generated commit messages · no semantic (MSBuild) engine · no semantic navigation for
+languages other than C# — diff and browse work for everything Monaco tokenises.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for where those sit.

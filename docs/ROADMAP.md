@@ -19,8 +19,8 @@ the current code will actively fight you.
 
 Nothing in later phases is safe until these exist.
 
-The backend half is in. Everything below that is still unticked is UI, and lands with the
-Phase 1 surface that gives it something to act on.
+**Complete.** The backend landed first; the UI half arrived with Phase 1, which is what gave
+it something to act on.
 
 - [x] **[BLOCKER]** Mutating git command path. `GitCli` already runs commands, but every
       caller today treats a non-zero exit as "no data". Writes need the opposite: exit
@@ -59,20 +59,35 @@ Phase 1 surface that gives it something to act on.
       tagged batches loses the agent's change entirely — which is the one thing this app
       exists to show. One redundant refresh is the cheaper mistake. Phase 1 can coalesce
       by path, where it knows exactly what it wrote.
-- [ ] **[BLOCKER]** Confirmation model for destructive actions — discard, reset, force
+- [x] **[BLOCKER]** Confirmation model for destructive actions — discard, reset, force
       push, branch delete, worktree remove. One consistent affordance, not per-feature
-      dialogs. *(UI — nothing destructive is reachable yet.)*
+      dialogs.
+      → `confirm.ts`, one dialog for all of them. It states recoverability explicitly on
+      every use, because that is the fact that differs between them: a user who learns
+      "the red button is undoable" from four actions will assume it of the fifth. Discard
+      says *permanent* and means it — working-tree content that was never staged is in no
+      git object, so the reflog cannot reach it. Escape and the backdrop both cancel, focus
+      starts on Cancel, and Enter only confirms the recoverable cases.
 - [x] **[HARD]** Undo, backed by reflog. Almost every git mutation is recoverable
       (`ORIG_HEAD`, reflog, stash); a UI that surfaces "undo that" converts the whole app
       from scary to safe. Do this early — retrofitting undo is much harder.
       → `UndoService`: per-worktree stack of inverse commands, plus the reflog underneath
       it. Refuses when HEAD has moved since — the agent committing between the app's
       mutation and the user's undo is the case that makes this app different.
-      **UI still to come.**
-- [ ] Editable Monaco. Currently `readOnly: true, domReadOnly: true` (`editor.ts:105-106`),
-      which is load-bearing for V1 and has to become conditional, not deleted — the diff
-      view should stay read-only even once conflict editing exists.
-      *(The backend half is done: `FileContentPayload.isEditable` says when it is allowed.)*
+      → UI landed with Phase 1: a button in the changed-files header labelled with what it
+      would actually reverse ("Undo commit \"fix the parser\""), plus `Ctrl` `Alt` `Z`.
+      Deliberately not `Ctrl` `Z` — Monaco owns that, and it means "undo my typing", which
+      is a very different size of action from rewinding a commit.
+- [x] Editable Monaco. Was `readOnly: true, domReadOnly: true`, load-bearing for V1 and now
+      conditional rather than deleted — the diff view stays read-only, since its left pane
+      is a commit and the right pane of a scoped comparison is not the working tree either.
+      → Only the code view lifts it, and only when `FileContentPayload.isEditable` says so.
+      **Dirty tracking came with it, and was not optional:** the app reloads the open file
+      on every watcher notification, which is correct while nothing is editable and
+      destructive the moment something is. An agent touching any file in the worktree fired
+      that reload, and `setValue` is not an edit — Monaco's undo stack does not cover it.
+      A model with unsaved edits is now never overwritten; the reload is refused and the
+      user is told the file changed underneath them, with the choice to keep or reload.
 - [x] Save path with encoding preservation. `FileContent.FromBytes` detects UTF-8/UTF-16
       BOMs on read; writes must round-trip the same encoding and line endings, or the app
       silently reformats files.
@@ -86,18 +101,64 @@ Phase 1 surface that gives it something to act on.
 
 ## Phase 1 — Staging and committing
 
-- [ ] Stage / unstage whole file
-- [ ] **[HARD]** Stage / unstage **hunk** — the feature that makes a git GUI worth using.
-      Monaco's diff editor exposes hunk boundaries; staging them means generating a
-      partial patch and feeding it to `git apply --cached`.
-- [ ] **[HARD]** Stage / unstage **line range** — same mechanism, finer granularity
-- [ ] Discard changes at file / hunk / line level *(destructive — Phase 0 confirmation)*
-- [ ] A real staged-vs-unstaged view. The current scope switch (All / Uncommitted /
-      Committed / Last) has no notion of the index; committing needs one.
-- [ ] Commit: message editor, amend, `--signoff`, GPG/SSH signing, co-author trailers
-- [ ] Commit message conventions — subject length, blank second line, conventional-commit
+**Complete.** Chapter is a git client rather than a viewer from here.
+
+- [x] Stage / unstage whole file
+      → `StagingService`. Unstage needs two commands, not one: `restore --staged` resolves
+      HEAD, and before the first commit there is not one — it exits 128 and leaves the file
+      staged. `rm --cached` is the fallback. Paths go to git as `:(literal)` pathspecs,
+      because a file genuinely called `a[1].txt` is otherwise a glob that matches nothing
+      and stages nothing while reporting success.
+- [x] **[HARD]** Stage / unstage **hunk** — the feature that makes a git GUI worth using.
+      → `PatchBuilder`, and the important decision is where the patch comes from: git's own
+      `diff` output, never the text in the editor. Under `core.autocrlf` the working tree
+      holds CRLF and the index holds LF, so a patch generated from what Monaco displays
+      fails to apply — or applies and rewrites every line ending in the file. Diffs are
+      read as bytes and round-tripped through Latin-1, so a file that is not UTF-8 survives
+      byte-for-byte rather than filling with U+FFFD.
+      **The controls are drawn from git's hunks, not Monaco's.** Monaco computes its own
+      diff and groups it differently, so a button anchored to one of its change regions
+      would name a hunk the user never looked at; `getFilePatch` hands the real boundaries
+      and bodies to the front-end so both sides count the same things.
+- [x] **[HARD]** Stage / unstage **line range** — same mechanism, finer granularity
+      → Selection in either diff pane maps onto positions in the hunk body. Both panes are
+      read because they carry different halves: an addition exists only on the right, a
+      deletion only on the left. The rewrite rules are not symmetric — applying forwards an
+      unselected addition is *dropped* and an unselected deletion becomes *context*;
+      reversing swaps the two. Getting that backwards yields a patch that applies cleanly
+      and stages the opposite of what was asked.
+- [x] Discard changes at file / hunk / line level *(destructive — Phase 0 confirmation)*
+      → All three. Discarding an untracked file deletes it rather than restoring it, and
+      the confirmation says so: "discard changes" reads as "put it back how it was", which
+      for a file that was never committed means removing it. The hunk-bar button renames
+      itself between *Discard hunk* and *Discard selection* rather than silently changing
+      its own blast radius.
+- [x] A real staged-vs-unstaged view. The scope switch (All / Uncommitted / Committed /
+      Last) had no notion of the index; committing needs one.
+      → The Uncommitted scope became it, rather than a fifth button: the switch answers
+      "which slice of the work", and staged-versus-unstaged is not another slice but the
+      same slice divided by the index. Sourced from `diff --cached` and `diff` directly,
+      **not** derived from the review scan — a file staged and then deleted from disk is in
+      neither the branch diff nor the working tree, and committing still includes it.
+- [x] Commit: message editor, amend, `--signoff`, GPG/SSH signing, co-author trailers
+      → The message is passed as a single `-m` argument, newlines and all: it never touches
+      a shell, and `-F -` is impossible because `GitCli` closes stdin on every invocation.
+      `--cleanup=whitespace` is stated explicitly so a repo's `commit.cleanup=strip` cannot
+      eat a line beginning with `#`. Signing defers to the repository's own `commit.gpgsign`
+      unless told otherwise — quietly passing `--no-gpg-sign` would produce unsigned commits
+      on a branch that requires them. *Signing choice and co-author trailers are on the
+      bridge and covered by tests; the commit box currently surfaces amend and sign-off, and
+      the other two want a UI.*
+- [x] Commit message conventions — subject length, blank second line, conventional-commit
       type/scope validation, configurable per repo
-- [ ] Guards: nothing staged, detached HEAD, in-progress operation, unresolved conflicts
+      → `CommitMessagePolicy`, per repository, with worktrees inheriting their repo's entry.
+      Nothing here ever blocks a commit: message rules are conventions, and an app that
+      refuses on its own reading of one is an app that stops you committing during an
+      incident because the subject is 74 characters.
+- [x] Guards: nothing staged, detached HEAD, in-progress operation, unresolved conflicts
+      → `CommitReadiness`, answered before the message is typed rather than after. A merge
+      in progress is a *note*, not a blocker — committing is how a resolved merge concludes,
+      and refusing would leave no way out of the state through the app.
 
 ## Phase 2 — AI commit messages
 
@@ -236,11 +297,19 @@ Nothing else on this list is unique to this app. These are.
       → `WriteFoundationsTests` creates and destroys its own repo per test and never
       touches the validation repos. `MutationParsingTests` covers the pure half — failure
       classification, operation detection, encoding round-trips — with no repository at all.
+      Phase 1 continued the pattern: `StagingTests` (disposable repos, including a
+      `core.autocrlf=true` one for hunk patches), `CommitMessageTests` (no repository at
+      all) and `CommitBridgeTests` (the JSON seam, where a rename in `Messages.cs` becomes
+      a missing field in `protocol.ts` rather than a compile error).
 - [ ] **Dry-run / preview** for anything destructive
 - [ ] **Long-running operations** — the bridge has a 60s call timeout (`bridge.ts`); clone,
       fetch, and push will exceed it. Needs a progress protocol, not a longer timeout.
 - [ ] **Multi-instance safety** — two Chapter windows on the same repo, or Chapter plus
       Rider, both writing
+      *(One case is handled: a hunk selection carries a fingerprint of the diff it was made
+      against, and the backend refuses when the file changed in between. Without it the user
+      approves hunk 2 of one diff and the app stages hunk 2 of another — which, in a
+      worktree an agent is actively writing to, is not a hypothetical.)*
 - [ ] **Keyboard-first** — the whole point of the app; every new action needs a binding
 - [ ] **`.gitattributes`** — still missing, and now that the app writes files, line-ending
       normalization stops being cosmetic
@@ -249,14 +318,16 @@ Nothing else on this list is unique to this app. These are.
 
 ## Suggested order
 
-1. **Phase 0** — unavoidable, and the riskiest thing to skip
-2. **Phase 1 + 2** — staging, committing, AI messages. Smallest slice that makes the app
-   a git client rather than a viewer, and it's the thing asked for.
-3. **Phase 3** — branches and stash, needed before checkout is safe
-4. **Phase 7** — worktree management. Cheap, and this app should obviously own it.
-5. **Phase 5** — push/pull. Blocked on credentials, so start that spike early.
-6. **Phase 4 + 6** — history and conflicts. Both large; conflicts especially.
-7. **Phase 8** — the differentiators, once the fundamentals are solid.
+1. ~~**Phase 0**~~ — done. Unavoidable, and the riskiest thing to skip.
+2. ~~**Phase 1**~~ — done. Staging, committing. The smallest slice that makes the app a git
+   client rather than a viewer.
+3. **Phase 2** — AI commit messages. **Next**, and it starts with the one decision the
+   roadmap leaves open below: where the API key lives.
+4. **Phase 3** — branches and stash, needed before checkout is safe
+5. **Phase 7** — worktree management. Cheap, and this app should obviously own it.
+6. **Phase 5** — push/pull. Blocked on credentials, so start that spike early.
+7. **Phase 4 + 6** — history and conflicts. Both large; conflicts especially.
+8. **Phase 8** — the differentiators, once the fundamentals are solid.
 
 Phase 8 is tempting to do first because it's the interesting part. It won't survive
 contact with users until Phase 0 exists.
