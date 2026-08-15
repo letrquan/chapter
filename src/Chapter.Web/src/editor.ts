@@ -17,42 +17,53 @@ self.MonacoEnvironment = {
 const DARK = 'chapter-dark'
 const LIGHT = 'chapter-light'
 
+/*
+ * These two themes are the third place the palette lives, after styles.css and the
+ * WPF window. The editor sits inside a card, so `editor.background` has to be the
+ * card's --bg-surface exactly — anything else draws a visible seam down the pane.
+ */
+
 monaco.editor.defineTheme(DARK, {
   base: 'vs-dark',
   inherit: true,
   rules: [],
   colors: {
-    'editor.background': '#0b0d10',
-    'editorGutter.background': '#0b0d10',
-    'editor.lineHighlightBackground': '#141922',
+    'editor.background': '#0d0f15',
+    'editorGutter.background': '#0d0f15',
+    'editor.lineHighlightBackground': '#151924',
     'editor.lineHighlightBorder': '#00000000',
-    'editorLineNumber.foreground': '#414b5a',
-    'editorLineNumber.activeForeground': '#8b95a7',
-    'editorIndentGuide.background1': '#1b2129',
-    'editorIndentGuide.activeBackground1': '#2b3441',
-    'editorWidget.background': '#151a21',
-    'editorWidget.border': '#29323d',
-    'editorHoverWidget.background': '#151a21',
-    'editorHoverWidget.border': '#29323d',
-    'editorSuggestWidget.background': '#151a21',
-    'editorSuggestWidget.border': '#29323d',
-    'editorSuggestWidget.selectedBackground': '#1d2530',
-    'peekViewResult.background': '#0d1014',
-    'peekViewEditor.background': '#0b0d10',
-    'peekViewTitle.background': '#151a21',
-    'peekView.border': '#7c9cff',
-    'peekViewResult.selectionBackground': '#1d2530',
+    'editorLineNumber.foreground': '#3f4757',
+    'editorLineNumber.activeForeground': '#8d96a8',
+    'editorIndentGuide.background1': '#1b1f29',
+    'editorIndentGuide.activeBackground1': '#2a3040',
+    'editorWidget.background': '#161a25',
+    'editorWidget.border': '#2a3040',
+    'editorHoverWidget.background': '#161a25',
+    'editorHoverWidget.border': '#2a3040',
+    'editorSuggestWidget.background': '#161a25',
+    'editorSuggestWidget.border': '#2a3040',
+    'editorSuggestWidget.selectedBackground': '#1e2331',
+    'editorStickyScroll.background': '#12141c',
+    'editorStickyScrollHover.background': '#171b25',
+    'peekViewResult.background': '#0a0c11',
+    'peekViewEditor.background': '#0d0f15',
+    'peekViewTitle.background': '#161a25',
+    'peekView.border': '#5b8cff',
+    'peekViewResult.selectionBackground': '#1e2331',
     'diffEditor.insertedTextBackground': '#3fb95022',
     'diffEditor.removedTextBackground': '#f8514922',
     'diffEditor.insertedLineBackground': '#3fb95014',
     'diffEditor.removedLineBackground': '#f8514914',
     'diffEditorGutter.insertedLineBackground': '#3fb95022',
     'diffEditorGutter.removedLineBackground': '#f8514922',
-    'scrollbarSlider.background': '#2a323d80',
-    'scrollbarSlider.hoverBackground': '#3a4552b0',
-    'scrollbarSlider.activeBackground': '#3a4552',
+    // hideUnchangedRegions is on, so the collapsed band is a permanent fixture.
+    'diffEditor.unchangedRegionBackground': '#12141c',
+    'diffEditor.unchangedRegionForeground': '#8d96a8',
+    'scrollbarSlider.background': '#262d3a80',
+    'scrollbarSlider.hoverBackground': '#37404fb0',
+    'scrollbarSlider.activeBackground': '#37404f',
     'editorOverviewRuler.border': '#00000000',
-    focusBorder: '#7c9cff66',
+    focusBorder: '#5b8cff66',
   },
 })
 
@@ -63,19 +74,37 @@ monaco.editor.defineTheme(LIGHT, {
   colors: {
     'editor.background': '#ffffff',
     'editorGutter.background': '#ffffff',
-    'editor.lineHighlightBackground': '#f4f6f9',
+    'editor.lineHighlightBackground': '#f5f7fa',
     'editor.lineHighlightBorder': '#00000000',
-    'editorLineNumber.foreground': '#b4bcc8',
-    'editorLineNumber.activeForeground': '#5f6977',
-    'editorIndentGuide.background1': '#e9edf2',
+    'editorLineNumber.foreground': '#b0b9c6',
+    'editorLineNumber.activeForeground': '#5a6474',
+    'editorIndentGuide.background1': '#e8ecf2',
+    'editorIndentGuide.activeBackground1': '#c7ced9',
     'editorWidget.background': '#ffffff',
-    'editorWidget.border': '#cdd4dd',
-    'peekViewResult.background': '#fbfcfd',
-    'peekView.border': '#3b62d9',
+    'editorWidget.border': '#c7ced9',
+    'editorHoverWidget.background': '#ffffff',
+    'editorHoverWidget.border': '#c7ced9',
+    'editorSuggestWidget.background': '#ffffff',
+    'editorSuggestWidget.border': '#c7ced9',
+    'editorSuggestWidget.selectedBackground': '#e4e8f0',
+    'editorStickyScroll.background': '#f2f4f8',
+    'editorStickyScrollHover.background': '#f0f2f7',
+    'peekViewResult.background': '#f2f4f8',
+    'peekViewEditor.background': '#ffffff',
+    'peekViewTitle.background': '#f2f4f8',
+    'peekView.border': '#2f5fe0',
+    'peekViewResult.selectionBackground': '#e4e8f0',
     'diffEditor.insertedTextBackground': '#1a7f371f',
     'diffEditor.removedTextBackground': '#cf222e1f',
-    'scrollbarSlider.background': '#cdd4dd80',
-    focusBorder: '#3b62d966',
+    'diffEditor.insertedLineBackground': '#1a7f3712',
+    'diffEditor.removedLineBackground': '#cf222e12',
+    'diffEditor.unchangedRegionBackground': '#f2f4f8',
+    'diffEditor.unchangedRegionForeground': '#5a6474',
+    'scrollbarSlider.background': '#ccd3dd80',
+    'scrollbarSlider.hoverBackground': '#aeb7c4b0',
+    'scrollbarSlider.activeBackground': '#aeb7c4',
+    'editorOverviewRuler.border': '#00000000',
+    focusBorder: '#2f5fe066',
   },
 })
 
@@ -101,6 +130,9 @@ const commonOptions: monaco.editor.IStandaloneEditorConstructionOptions = {
   guides: { indentation: true },
   bracketPairColorization: { enabled: true },
   contextmenu: true,
+  // The editor lives inside a card that clips to its rounded corners, so hover and
+  // suggest widgets have to escape to the body or they are cut off at the pane edge.
+  fixedOverflowWidgets: true,
   // This is a review tool: nothing here writes to disk.
   readOnly: true,
   domReadOnly: true,
@@ -213,6 +245,13 @@ export function initEditors(container: HTMLElement): void {
   diffEditor = monaco.editor.createDiffEditor(diffHost, {
     ...commonOptions,
     renderSideBySide: true,
+    // Monaco silently drops to a unified diff when the pane is narrower than this, and
+    // its 900px default is wider than the editor gets at the app's own default window
+    // size — so the side-by-side this tool exists for never appeared, and the toggle
+    // button appeared to do nothing. Low enough that the split survives a normal window,
+    // high enough that a genuinely cramped pane still falls back rather than showing two
+    // useless columns.
+    renderSideBySideInlineBreakpoint: 620,
     ignoreTrimWhitespace: false,
     renderOverviewRuler: true,
     diffWordWrap: 'off',

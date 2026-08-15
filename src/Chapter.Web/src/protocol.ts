@@ -251,6 +251,8 @@ export interface Api {
     result: AssetPayload
   }
   getSettings: { params: void; result: AppSettings }
+  /** Persists the preference and repaints the native window caption to match. */
+  setTheme: { params: { theme: 'dark' | 'light' | 'system' }; result: boolean }
   pickFolder: { params: void; result: string | null }
   openInEditor: {
     params: { worktreePath: string; path: string; line: number; column: number; editor: string }

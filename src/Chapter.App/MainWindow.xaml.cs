@@ -2,6 +2,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 using Chapter.Core;
 using Chapter.Core.Contracts;
 using Chapter.Core.Diagnostics;
@@ -34,6 +35,7 @@ public partial class MainWindow : Window
         _dispatcher = new BridgeDispatcher(workspace, _settings)
         {
             FolderPicker = PickFolderAsync,
+            ThemeChanged = ApplyWindowChrome,
         };
         _dispatcher.EventRaised += OnBackendEvent;
         _dispatcher.StartWatching();
@@ -74,7 +76,10 @@ public partial class MainWindow : Window
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        ApplyDarkTitleBar();
+        // Painted from the stored preference rather than waiting for the page to report
+        // one, so the caption is already right on the first frame instead of flicking
+        // to the correct colour a moment after the window appears.
+        ApplyWindowChrome(_settings.Theme);
 
         try
         {
@@ -244,28 +249,123 @@ public partial class MainWindow : Window
     }
 
     // -----------------------------------------------------------------------
-    // Windows 11 dark title bar. Without this the chrome stays light against a
-    // dark app, which is the single most obvious "unfinished" tell.
+    // Native window chrome.
+    //
+    // The caption is the one part of the window the front-end cannot draw, so it is
+    // painted here to the same --bg-shell the page uses. Left alone it stays at the
+    // system default, which is the single most obvious "unfinished" tell — and worse
+    // once the app has a light theme, because a stock dark caption then sits above a
+    // white page.
+    //
+    // Tinting rather than replacing the caption is deliberate: a custom title bar over
+    // a WebView2 child window means hand-rolling hit testing, and loses Aero Snap and
+    // the Windows 11 snap-layouts flyout with it.
     // -----------------------------------------------------------------------
 
     private const int DwmwaUseImmersiveDarkMode = 20;
+    private const int DwmwaBorderColor = 34;
+    private const int DwmwaCaptionColor = 35;
+    private const int DwmwaTextColor = 36;
 
     [DllImport("dwmapi.dll", PreserveSig = true)]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
-    private void ApplyDarkTitleBar()
+    private sealed record ChromeTheme(Color Shell, Color Text, Color Dim, Color Border, bool Dark);
+
+    private static readonly ChromeTheme DarkChrome = new(
+        Shell: Color.FromRgb(0x05, 0x06, 0x09),
+        Text: Color.FromRgb(0xE7, 0xEA, 0xF0),
+        Dim: Color.FromRgb(0x8D, 0x96, 0xA8),
+        Border: Color.FromRgb(0x1B, 0x1F, 0x29),
+        Dark: true);
+
+    private static readonly ChromeTheme LightChrome = new(
+        Shell: Color.FromRgb(0xE8, 0xEB, 0xF0),
+        Text: Color.FromRgb(0x14, 0x18, 0x1F),
+        Dim: Color.FromRgb(0x5A, 0x64, 0x74),
+        Border: Color.FromRgb(0xC7, 0xCE, 0xD9),
+        Dark: false);
+
+    /// <summary>
+    /// Repaints the window — caption, frame and the fallback error panel — for a theme
+    /// preference of "dark", "light" or "system".
+    /// </summary>
+    private void ApplyWindowChrome(string preference)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.InvokeAsync(() => ApplyWindowChrome(preference));
+            return;
+        }
+
+        var theme = preference switch
+        {
+            "dark" => DarkChrome,
+            "light" => LightChrome,
+            _ => SystemPrefersLight() ? LightChrome : DarkChrome,
+        };
+
+        Background = new SolidColorBrush(theme.Shell);
+        ErrorPanel.Background = Background;
+        ErrorTitle.Foreground = new SolidColorBrush(theme.Text);
+        ErrorText.Foreground = new SolidColorBrush(theme.Dim);
+
+        // Governs the flat colour shown before the page's first frame, so a reload does
+        // not flash the previous theme.
+        WebView.DefaultBackgroundColor =
+            System.Drawing.Color.FromArgb(theme.Shell.R, theme.Shell.G, theme.Shell.B);
+
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero) return;
+
+        // Immersive dark mode still matters alongside an explicit caption colour: it is
+        // what darkens the minimise/maximise/close glyphs and their hover states.
+        SetChromeAttribute(handle, DwmwaUseImmersiveDarkMode, theme.Dark ? 1 : 0);
+        SetChromeAttribute(handle, DwmwaCaptionColor, ColorRef(theme.Shell));
+        SetChromeAttribute(handle, DwmwaTextColor, ColorRef(theme.Text));
+        SetChromeAttribute(handle, DwmwaBorderColor, ColorRef(theme.Border));
+    }
+
+    /// <summary>
+    /// DWM takes a COLORREF — 0x00BBGGRR — which is byte-reversed from the way the same
+    /// colour is written everywhere else in this codebase.
+    /// </summary>
+    private static int ColorRef(Color color) => color.R | (color.G << 8) | (color.B << 16);
+
+    private static void SetChromeAttribute(IntPtr handle, int attribute, int value)
     {
         try
         {
-            var handle = new WindowInteropHelper(this).Handle;
-            if (handle == IntPtr.Zero) return;
-
-            var enabled = 1;
-            DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkMode, ref enabled, sizeof(int));
+            // The return value is ignored on purpose. The caption-colour attributes are
+            // Windows 11 22000+, and older builds answer E_INVALIDARG — which costs us a
+            // default-coloured title bar and nothing else.
+            DwmSetWindowAttribute(handle, attribute, ref value, sizeof(int));
         }
         catch (DllNotFoundException)
         {
-            // Older Windows without dwmapi; the app still works, just with light chrome.
+            // Older Windows without dwmapi; the app still works, just with system chrome.
+        }
+    }
+
+    /// <summary>
+    /// Resolves "system" the way the front-end does. Both read the same OS setting —
+    /// this one straight from the registry, the page through prefers-color-scheme — so
+    /// the caption and the interface cannot disagree.
+    /// </summary>
+    private static bool SystemPrefersLight()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+
+            return key?.GetValue("AppsUseLightTheme") is int value && value != 0;
+        }
+        catch
+        {
+            // No key, no permission, or an unexpected value type: dark is the app's own
+            // default, so fall back to it rather than to the Windows default of light.
+            return false;
         }
     }
 }

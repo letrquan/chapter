@@ -119,6 +119,12 @@ public sealed record OperationLogRequest
     public int Limit { get; init; } = 100;
 }
 
+public sealed record SetThemeRequest
+{
+    /// <summary>"dark", "light" or "system".</summary>
+    public string Theme { get; init; } = "system";
+}
+
 // ---------------------------------------------------------------------------
 // Response payloads
 // ---------------------------------------------------------------------------
