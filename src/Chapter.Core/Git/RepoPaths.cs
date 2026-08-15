@@ -43,6 +43,27 @@ public static class RepoPaths
     }
 
     /// <summary>
+    /// Whether a repo-relative path enters the git administrative directory.
+    ///
+    /// <see cref="Resolve"/> is not enough on its own for writes. It answers "does this
+    /// escape the worktree", and <c>.git/hooks/pre-commit</c> does not escape anything —
+    /// it is squarely inside. Writing there is arbitrary code execution the next time
+    /// anyone runs git in the repository, and <c>.git/config</c> is the same thing by a
+    /// different route (<c>core.pager</c>, <c>core.fsmonitor</c>, an alias). Paths reaching
+    /// the write path come from the front-end, which renders content an agent wrote, so
+    /// this is reachable rather than theoretical.
+    /// </summary>
+    public static bool EntersGitDirectory(string repoRelativePath)
+    {
+        foreach (var segment in repoRelativePath.Split('/', '\\'))
+        {
+            if (segment.Equals(".git", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Git's <c>-z</c> output is NUL-separated with no trailing empty field of interest.
     /// Splitting naively leaves a phantom empty entry that then parses as a bogus record.
     /// </summary>

@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Interop;
 using Chapter.Core;
 using Chapter.Core.Contracts;
+using Chapter.Core.Diagnostics;
 using Chapter.Core.Git;
 using Microsoft.Web.WebView2.Core;
 
@@ -25,7 +26,12 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         _settings = AppSettings.Load();
-        _dispatcher = new BridgeDispatcher(new WorkspaceService(new GitCli()), _settings)
+
+        // The log goes to disk here, unlike in tests: the question it answers — "what did
+        // Chapter do to my repository" — is usually asked after a restart.
+        var workspace = new WorkspaceService(new GitCli(), new OperationLog(OperationLog.DefaultFilePath));
+
+        _dispatcher = new BridgeDispatcher(workspace, _settings)
         {
             FolderPicker = PickFolderAsync,
         };

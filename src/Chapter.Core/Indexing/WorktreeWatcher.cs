@@ -57,6 +57,9 @@ public sealed class WorktreeWatcher : IDisposable
 
         /// <summary>The OS dropped events; what changed is unknown.</summary>
         public bool Overflowed;
+
+        /// <summary>Every event in this batch arrived while the app was writing.</summary>
+        public bool SelfWrite = true;
     }
 
     /// <summary>Why a worktree needs re-reading.</summary>
@@ -72,8 +75,103 @@ public sealed class WorktreeWatcher : IDisposable
         Overflow,
     }
 
+    /// <summary>A coalesced batch of changes to one worktree.</summary>
+    /// <param name="SelfOriginated">
+    /// True when the app itself made these changes. The distinction only exists because the
+    /// app now writes to the worktrees it watches: without it, every commit the app makes
+    /// arrives back as if an agent had made it, and the app refreshes in response to itself.
+    /// </param>
+    public sealed record WorktreeChange(
+        string WorktreePath,
+        IReadOnlyList<string> Paths,
+        ChangeReason Reason,
+        bool SelfOriginated);
+
     /// <summary>Raised after the quiet period with the worktree and the paths that changed.</summary>
-    public event Action<string, IReadOnlyList<string>, ChangeReason>? Changed;
+    public event Action<WorktreeChange>? Changed;
+
+    // -----------------------------------------------------------------------
+    // Self-write suppression
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// How long after a mutation finishes its file events are still treated as ours.
+    ///
+    /// Filesystem notifications lag the write that caused them, so a window that closed
+    /// with the git process would miss most of them. Kept short because anything an agent
+    /// writes inside it is attributed to us too — see <see cref="BeginSelfWrite"/>.
+    /// </summary>
+    private static readonly TimeSpan SelfWriteGrace = TimeSpan.FromMilliseconds(600);
+
+    private sealed class SelfWriteState
+    {
+        public int Depth;
+        public long EndedAtTicks = long.MinValue;
+    }
+
+    private readonly ConcurrentDictionary<string, SelfWriteState> _selfWrites =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Marks everything the watcher sees in this worktree, until the scope is disposed and
+    /// the grace period elapses, as the app's own work.
+    ///
+    /// The attribution is by time, not by path, because a mutation's real footprint is
+    /// unknowable in advance — a checkout rewrites whatever differs between two commits.
+    /// An agent writing inside the window is therefore credited to us as well, which is
+    /// why the tag is only ever information and never a reason to discard a batch: nothing
+    /// downstream may skip work on the strength of it. Consumers invalidate, re-index and
+    /// notify exactly as they would for anybody else's write, and use the tag only to say
+    /// where a change came from.
+    /// </summary>
+    public IDisposable BeginSelfWrite(string worktreePath)
+    {
+        var state = _selfWrites.GetOrAdd(worktreePath, _ => new SelfWriteState());
+        lock (state) state.Depth++;
+
+        return new SelfWriteScope(this, worktreePath);
+    }
+
+    private void EndSelfWrite(string worktreePath)
+    {
+        if (!_selfWrites.TryGetValue(worktreePath, out var state)) return;
+
+        lock (state)
+        {
+            state.Depth--;
+            if (state.Depth <= 0)
+            {
+                state.Depth = 0;
+                state.EndedAtTicks = Environment.TickCount64;
+            }
+        }
+    }
+
+    private bool IsSelfWrite(string worktreePath)
+    {
+        if (!_selfWrites.TryGetValue(worktreePath, out var state)) return false;
+
+        lock (state)
+        {
+            if (state.Depth > 0) return true;
+            if (state.EndedAtTicks == long.MinValue) return false;
+
+            return Environment.TickCount64 - state.EndedAtTicks < SelfWriteGrace.TotalMilliseconds;
+        }
+    }
+
+    private sealed class SelfWriteScope(WorktreeWatcher watcher, string worktreePath) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            // A double dispose would decrement the depth twice and end the window while
+            // another mutation is still running inside it.
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            watcher.EndSelfWrite(worktreePath);
+        }
+    }
 
     /// <param name="gitDir">
     /// The worktree's git administrative directory, from
@@ -179,6 +277,8 @@ public sealed class WorktreeWatcher : IDisposable
         {
             pending.Timer?.Dispose();
         }
+
+        _selfWrites.TryRemove(worktreePath, out _);
     }
 
     private void Queue(string worktreePath, string root, string fullPath)
@@ -197,10 +297,19 @@ public sealed class WorktreeWatcher : IDisposable
 
     private void Schedule(string worktreePath, Action<PendingChange> record)
     {
+        // Read the attribution now rather than at flush time: by the time the quiet period
+        // elapses the mutation has long finished, so every batch would look foreign.
+        var isSelf = IsSelfWrite(worktreePath);
+
         var pending = _pending.GetOrAdd(worktreePath, _ => new PendingChange());
         lock (pending)
         {
             record(pending);
+
+            // One foreign event in the batch makes the whole batch foreign. Attribution
+            // can only ever cost a redundant refresh in that direction; the other way it
+            // would cost a missed one.
+            if (!isSelf) pending.SelfWrite = false;
 
             // Restart the quiet period on every event so a burst reports once, at the end.
             pending.Timer ??= new Timer(_ => Flush(worktreePath), null, Timeout.Infinite, Timeout.Infinite);
@@ -213,17 +322,19 @@ public sealed class WorktreeWatcher : IDisposable
         if (!_pending.TryGetValue(worktreePath, out var pending)) return;
 
         string[] paths;
-        bool gitState, overflowed;
+        bool gitState, overflowed, selfWrite;
 
         lock (pending)
         {
             paths = pending.Paths.ToArray();
             gitState = pending.GitStateChanged;
             overflowed = pending.Overflowed;
+            selfWrite = pending.SelfWrite;
 
             pending.Paths.Clear();
             pending.GitStateChanged = false;
             pending.Overflowed = false;
+            pending.SelfWrite = true;
         }
 
         if (paths.Length == 0 && !gitState && !overflowed) return;
@@ -234,7 +345,16 @@ public sealed class WorktreeWatcher : IDisposable
             : paths.Length == 0 ? ChangeReason.GitState
             : ChangeReason.Files;
 
-        Changed?.Invoke(worktreePath, reason == ChangeReason.Overflow ? [] : paths, reason);
+        // An overflow is never treated as ours. The dropped events could have come from
+        // anywhere, and claiming a rebuild-everything signal as self-inflicted would skip
+        // the one refresh that recovers from it.
+        if (overflowed) selfWrite = false;
+
+        Changed?.Invoke(new WorktreeChange(
+            worktreePath,
+            reason == ChangeReason.Overflow ? [] : paths,
+            reason,
+            selfWrite));
     }
 
     /// <summary>
@@ -245,6 +365,12 @@ public sealed class WorktreeWatcher : IDisposable
     {
         var relative = Path.GetRelativePath(root, fullPath);
         if (relative.StartsWith("..", StringComparison.Ordinal)) return true;
+
+        // The app's own atomic-write scratch file, which has to live beside its target
+        // because a rename is only atomic within a directory. Reporting it would send the
+        // indexer after a file that exists for milliseconds and is never the one the user
+        // is looking at.
+        if (relative.EndsWith(WorkingTreeWriter.TempSuffix, StringComparison.OrdinalIgnoreCase)) return true;
 
         foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
         {

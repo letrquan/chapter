@@ -107,6 +107,18 @@ public sealed record SearchRequest
     public int Limit { get; init; } = 50;
 }
 
+public sealed record SaveFileRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Path { get; init; } = "";
+    public string Text { get; init; } = "";
+}
+
+public sealed record OperationLogRequest
+{
+    public int Limit { get; init; } = 100;
+}
+
 // ---------------------------------------------------------------------------
 // Response payloads
 // ---------------------------------------------------------------------------
@@ -132,6 +144,67 @@ public sealed record FileContentPayload
     public required string Text { get; init; }
     public required string Language { get; init; }
     public bool IsBinary { get; init; }
+
+    /// <summary>The file's encoding on disk, which a save has to reproduce.</summary>
+    public Git.FileEncoding Encoding { get; init; } = Git.FileEncoding.Utf8;
+
+    public Git.LineEnding LineEnding { get; init; } = Git.LineEnding.Lf;
+
+    /// <summary>
+    /// Whether this content can be written back. False for anything read at a commit and
+    /// for binary files — the editor must not offer to save over history.
+    /// </summary>
+    public bool IsEditable { get; init; }
+}
+
+/// <summary>The result of writing a file back to the working tree.</summary>
+public sealed record SavePayload
+{
+    public required string Path { get; init; }
+    public required bool Ok { get; init; }
+    public string? Error { get; init; }
+    public int BytesWritten { get; init; }
+}
+
+/// <summary>
+/// The outcome of a mutation, as the UI needs it: whether it worked, one sentence about
+/// why not, and enough classification to decide what to offer next.
+/// </summary>
+public sealed record MutationPayload
+{
+    public required string Operation { get; init; }
+    public required bool Ok { get; init; }
+    public required string Message { get; init; }
+    public Git.GitFailure Failure { get; init; } = Git.GitFailure.None;
+    public string CommandLine { get; init; } = "";
+    public int ExitCode { get; init; }
+    public int Attempts { get; init; }
+    public long ElapsedMs { get; init; }
+
+    public static MutationPayload From(Git.GitMutation mutation) => new()
+    {
+        Operation = mutation.Operation,
+        Ok = mutation.Success,
+        Message = mutation.Message,
+        Failure = mutation.Failure,
+        CommandLine = mutation.CommandLine,
+        ExitCode = mutation.ExitCode,
+        Attempts = mutation.Attempts,
+        ElapsedMs = mutation.ElapsedMs,
+    };
+}
+
+/// <summary>What undo would do next, so the UI can label the action rather than guess.</summary>
+public sealed record UndoPayload
+{
+    /// <summary>Null when there is nothing recorded for this worktree.</summary>
+    public string? Label { get; init; }
+
+    public bool IsDestructive { get; init; }
+    public string? Warning { get; init; }
+
+    /// <summary>Recent HEAD movements, which outlive the undo stack and the app itself.</summary>
+    public IReadOnlyList<Git.ReflogEntry> Reflog { get; init; } = [];
 }
 
 /// <summary>

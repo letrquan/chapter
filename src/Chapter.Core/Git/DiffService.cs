@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace Chapter.Core.Git;
 
 /// <summary>
@@ -32,9 +30,9 @@ public sealed class DiffService(GitCli git)
 
         var files = ParseNameStatus(await nameStatusTask.ConfigureAwait(false));
         var stats = ParseNumstat(await numstatTask.ConfigureAwait(false));
-        var (untracked, dirty) = ParseWorkingState(await statusTask.ConfigureAwait(false));
+        var working = ParseWorkingState(await statusTask.ConfigureAwait(false));
 
-        var merged = new List<ChangedFile>(files.Count + untracked.Count);
+        var merged = new List<ChangedFile>(files.Count + working.Untracked.Count);
 
         foreach (var file in files)
         {
@@ -42,7 +40,13 @@ public sealed class DiffService(GitCli git)
                 ? file with { LinesAdded = stat.Added, LinesRemoved = stat.Removed, IsBinary = stat.IsBinary }
                 : file;
 
-            merged.Add(withStats with { IsUncommitted = dirty.Contains(file.Path) });
+            merged.Add(withStats with
+            {
+                IsUncommitted = working.Dirty.Contains(file.Path),
+                // Guarded because the list is empty in every repository that is not
+                // mid-merge, which is nearly all of them.
+                IsConflicted = working.Unmerged.Count > 0 && working.Unmerged.Contains(file.Path),
+            });
         }
 
         if (diffBase.IncludeUntracked)
@@ -50,7 +54,7 @@ public sealed class DiffService(GitCli git)
             // Untracked files have no git-side counterpart, so line counts come from the
             // file itself: every line is an addition.
             var known = merged.Select(f => f.Path).ToHashSet(StringComparer.Ordinal);
-            foreach (var path in untracked)
+            foreach (var path in working.Untracked)
             {
                 if (!known.Add(path)) continue;
 
@@ -176,18 +180,35 @@ public sealed class DiffService(GitCli git)
     private static int ParseIntOrZero(string s) => int.TryParse(s, out var v) ? v : 0;
 
     /// <summary>
+    /// Working-tree state extracted from a single <c>git status</c> run.
+    /// </summary>
+    internal sealed record WorkingState
+    {
+        /// <summary>Paths git does not track, in the order it reported them.</summary>
+        public List<string> Untracked { get; init; } = [];
+
+        /// <summary>Tracked paths that differ from HEAD, staged or not.</summary>
+        public HashSet<string> Dirty { get; init; } = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Paths with an unresolved merge conflict. Empty in any repository that is not
+        /// part-way through a merge, rebase, cherry-pick or revert.
+        /// </summary>
+        public List<string> Unmerged { get; init; } = [];
+    }
+
+    /// <summary>
     /// Extracts working-tree state from <c>git status --porcelain=v2 -z</c>: the untracked
-    /// paths, and the tracked paths that differ from HEAD.
+    /// paths, the tracked paths that differ from HEAD, and the unmerged ones.
     ///
     /// Every entry is NUL-terminated, but rename entries (type <c>2</c>) are followed by a
     /// second NUL-terminated field holding the original path. That trailing field has to be
     /// consumed explicitly or it gets read as the start of the next entry.
     /// </summary>
-    internal static (List<string> Untracked, HashSet<string> Dirty) ParseWorkingState(string output)
+    internal static WorkingState ParseWorkingState(string output)
     {
         var tokens = RepoPaths.SplitNul(output);
-        var untracked = new List<string>();
-        var dirty = new HashSet<string>(StringComparer.Ordinal);
+        var state = new WorkingState();
 
         for (var i = 0; i < tokens.Length;)
         {
@@ -197,8 +218,17 @@ public sealed class DiffService(GitCli git)
             switch (entry[0])
             {
                 case '?':
-                    untracked.Add(entry[2..]);
+                {
+                    var path = entry[2..];
+
+                    // The app's own atomic-write scratch file. It exists for milliseconds
+                    // beside the file being saved, and listing it would show a phantom
+                    // untracked file — and invite an agent's `git add -A` to commit it.
+                    if (path.EndsWith(WorkingTreeWriter.TempSuffix, StringComparison.OrdinalIgnoreCase)) break;
+
+                    state.Untracked.Add(path);
                     break;
+                }
 
                 case '1':
                 case '2':
@@ -210,16 +240,33 @@ public sealed class DiffService(GitCli git)
                     var path = FieldAfter(entry, isRename ? 9 : 8);
 
                     if (path is not null && entry.Length > 3 && (entry[2] != '.' || entry[3] != '.'))
-                        dirty.Add(path);
+                        state.Dirty.Add(path);
 
                     // Renamed/copied entry: consume its origin-path field too.
                     if (isRename && i < tokens.Length) i++;
                     break;
                 }
+
+                case 'u':
+                {
+                    // "u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>" — ten fields
+                    // before the path, three of them the stage-1/2/3 blob hashes that make
+                    // an unmerged entry longer than an ordinary one.
+                    //
+                    // These used to be skipped entirely, which meant a conflicted file was
+                    // reported as neither changed nor dirty: invisible in the very state
+                    // where it is the only thing that matters.
+                    var path = FieldAfter(entry, 10);
+                    if (path is null) break;
+
+                    state.Unmerged.Add(path);
+                    state.Dirty.Add(path);
+                    break;
+                }
             }
         }
 
-        return (untracked, dirty);
+        return state;
     }
 
     /// <summary>
@@ -278,57 +325,5 @@ public sealed class DiffService(GitCli git)
         // A final line without a trailing newline still counts.
         if (!content.Text.EndsWith('\n')) lines++;
         return (lines, false);
-    }
-}
-
-/// <summary>Decoded file content, or a marker that it is not text at all.</summary>
-public sealed record FileContent(string Text, bool IsBinary, int ByteLength)
-{
-    public static readonly FileContent Empty = new("", false, 0);
-
-    /// <summary>
-    /// Decodes bytes to text, honouring a BOM when present and defaulting to UTF-8.
-    /// Binary detection uses git's own heuristic: a NUL byte near the start of the file.
-    /// </summary>
-    public static FileContent FromBytes(byte[] bytes)
-    {
-        if (bytes.Length == 0) return Empty;
-
-        // BOM check comes first. UTF-16 text is full of NUL bytes, so running the binary
-        // probe ahead of this would classify every UTF-16 source file as binary.
-        if (TryDecodeWithBom(bytes, out var bomText))
-            return new FileContent(bomText, IsBinary: false, bytes.Length);
-
-        var probe = Math.Min(bytes.Length, 8000);
-        if (Array.IndexOf(bytes, (byte)0, 0, probe) >= 0)
-            return new FileContent("", IsBinary: true, bytes.Length);
-
-        // Invalid sequences are replaced rather than throwing: a file with a few stray
-        // bytes should still be reviewable, just with substitution characters.
-        return new FileContent(Encoding.UTF8.GetString(bytes), IsBinary: false, bytes.Length);
-    }
-
-    private static bool TryDecodeWithBom(byte[] bytes, out string text)
-    {
-        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-        {
-            text = Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
-            return true;
-        }
-
-        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
-        {
-            text = Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
-            return true;
-        }
-
-        if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
-        {
-            text = Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
-            return true;
-        }
-
-        text = "";
-        return false;
     }
 }
