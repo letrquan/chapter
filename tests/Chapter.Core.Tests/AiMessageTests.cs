@@ -743,6 +743,69 @@ public class ApiKeyStoreTests : IDisposable
     }
 
     [Fact]
+    public void Two_providers_keep_two_separate_keys()
+    {
+        // A Claude key and an OpenAI key are different secrets. Switching between providers
+        // must not mean retyping either of them.
+        var store = Store();
+
+        store.Store(Anthropic, "sk-ant-for-claude-0000");
+        store.Store(OpenAi, "sk-openai-for-the-other-0000");
+
+        Assert.Equal("sk-ant-for-claude-0000", store.ReadKey(Anthropic));
+        Assert.Equal("sk-openai-for-the-other-0000", store.ReadKey(OpenAi));
+
+        // Forgetting one leaves the other alone.
+        store.Clear(Anthropic);
+        Assert.Null(store.ReadKey(Anthropic));
+        Assert.Equal("sk-openai-for-the-other-0000", store.ReadKey(OpenAi));
+    }
+
+    [Fact]
+    public void Each_provider_falls_back_to_its_own_environment_variable()
+    {
+        var store = Store(new Dictionary<string, string?>
+        {
+            [ApiKeyStore.AnthropicVariable] = "sk-ant-from-the-environment",
+            [ApiKeyStore.OpenAiVariable] = "sk-openai-from-the-environment",
+        });
+
+        Assert.Equal("sk-ant-from-the-environment", store.ReadKey(Anthropic));
+        Assert.Equal("sk-openai-from-the-environment", store.ReadKey(OpenAi));
+    }
+
+    [Fact]
+    public void A_key_stored_before_there_were_two_providers_is_still_read()
+    {
+        // The file used to hold a bare key rather than a JSON object. Losing somebody's
+        // credential would be a poor way to introduce a second provider — so a blob that does
+        // not parse is read as the Anthropic one, which is what it was.
+        //
+        // The entropy is spelled out again here rather than shared with the production code on
+        // purpose: anyone who changes it orphans every key already stored, and this test is
+        // the only thing that would say so.
+        var entropy = System.Text.Encoding.UTF8.GetBytes("Chapter.ApiKey.v1");
+
+        File.WriteAllBytes(_file, System.Security.Cryptography.ProtectedData.Protect(
+            System.Text.Encoding.UTF8.GetBytes("sk-ant-written-by-an-older-build"),
+            entropy,
+            System.Security.Cryptography.DataProtectionScope.CurrentUser));
+
+        var store = Store();
+
+        Assert.Equal("sk-ant-written-by-an-older-build", store.ReadKey(Anthropic));
+        Assert.Null(store.ReadKey(OpenAi));
+
+        // And storing the second key migrates the file to the new shape without dropping the
+        // first, which is the half that is only correct by construction.
+        Assert.Null(store.Store(OpenAi, "sk-openai-added-later"));
+
+        var reopened = Store();
+        Assert.Equal("sk-ant-written-by-an-older-build", reopened.ReadKey(Anthropic));
+        Assert.Equal("sk-openai-added-later", reopened.ReadKey(OpenAi));
+    }
+
+    [Fact]
     public void The_hint_identifies_a_key_without_revealing_one()
     {
         const string key = "sk-ant-api03-abcdefghijklmnop-WXYZ";

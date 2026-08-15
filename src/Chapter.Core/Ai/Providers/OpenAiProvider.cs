@@ -112,24 +112,25 @@ public sealed class OpenAiProvider : IMessageProvider
     public async Task<ModelOutcome> CompleteAsync(
         ModelRequest request, Action<string>? onProgress, CancellationToken ct = default)
     {
-        // The two things that might not be understood, each droppable independently.
+        // The three things that might not be understood, each droppable independently.
         var schema = true;
         var modernTokenField = true;
+        var usageInStream = true;
 
         var concessions = new List<string>();
 
-        // At most two downgrades — one per droppable feature — then the failure is real and
-        // is reported. An unbounded ladder would turn a genuinely broken endpoint into a
-        // silent series of retries.
+        // At most one downgrade per droppable feature, then the failure is real and is
+        // reported. An unbounded ladder would turn a genuinely broken endpoint into a silent
+        // series of retries, each one billed.
         for (var attempt = 0; ; attempt++)
         {
-            var body = BuildBody(request, onProgress is not null, schema, modernTokenField);
+            var body = BuildBody(request, onProgress is not null, schema, modernTokenField, usageInStream);
 
             try
             {
                 return await SendAsync(body, onProgress, concessions, ct).ConfigureAwait(false);
             }
-            catch (ProviderException ex) when (attempt < 2 && ex.Status == HttpStatusCode.BadRequest)
+            catch (ProviderException ex) when (attempt < 3 && ex.Status == HttpStatusCode.BadRequest)
             {
                 var offending = (ex.Body ?? "") + " " + ex.Message;
 
@@ -144,6 +145,15 @@ public sealed class OpenAiProvider : IMessageProvider
                 {
                     schema = false;
                     concessions.Add("retried without a response schema");
+                    continue;
+                }
+
+                // The cheapest thing to lose: without it the cost line reads zero, which is a
+                // worse outcome than a hard error only if you would rather have no message.
+                if (usageInStream && offending.Contains("stream_options", StringComparison.OrdinalIgnoreCase))
+                {
+                    usageInStream = false;
+                    concessions.Add("retried without usage reporting");
                     continue;
                 }
 
@@ -176,7 +186,7 @@ public sealed class OpenAiProvider : IMessageProvider
     /// the seam already guarantees — is all that can usefully be done for it.
     /// </summary>
     internal static JsonObject BuildBody(
-        ModelRequest request, bool stream, bool schema, bool modernTokenField)
+        ModelRequest request, bool stream, bool schema, bool modernTokenField, bool usageInStream = true)
     {
         var messages = new JsonArray
         {
@@ -226,8 +236,9 @@ public sealed class OpenAiProvider : IMessageProvider
         }
 
         // Asked for explicitly, because without it a streamed response carries no usage at
-        // all and the cost line would read as zero for every generation.
-        if (stream) body["stream_options"] = new JsonObject { ["include_usage"] = true };
+        // all and the cost line would read as zero for every generation. Older builds of some
+        // servers reject the field outright, which is what the ladder's third rung is for.
+        if (stream && usageInStream) body["stream_options"] = new JsonObject { ["include_usage"] = true };
 
         return body;
     }
@@ -321,6 +332,16 @@ public sealed class OpenAiProvider : IMessageProvider
 
             if (property["type"] is JsonValue type && type.TryGetValue<string>(out var single))
                 property["type"] = new JsonArray(single, "null");
+
+            // And null has to be allowed by the enum as well, because the two are checked
+            // independently: a property whose type says string-or-null and whose enum lists
+            // only strings cannot be null after all.
+            //
+            // This is not a corner. A repository that has *not* opted into conventional
+            // commits still carries the default type list, so without this the model would be
+            // forced to prefix every subject on exactly the repositories the instructions tell
+            // it to leave alone.
+            if (property["enum"] is JsonArray values && !values.Any(v => v is null)) values.Add(null);
         }
 
         result["required"] = all;

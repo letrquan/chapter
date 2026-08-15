@@ -216,6 +216,75 @@ public class OpenAiProviderTests
     }
 
     [Fact]
+    public void An_optional_property_with_an_enum_has_null_added_to_the_enum_too()
+    {
+        // The trap in making everything required. JSON Schema checks `enum` independently of
+        // `type`, so a property whose type says string-or-null and whose enum lists only
+        // strings still cannot be null.
+        //
+        // Not a corner case: a repository that has *not* opted into conventional commits still
+        // carries the default type list, so without this the model is forced to prefix every
+        // subject on exactly the repositories the instructions tell it to leave alone.
+        var policy = new CommitMessagePolicy { RequireConventionalCommit = false };
+        Assert.NotEmpty(policy.Types);
+
+        var strict = OpenAiProvider.Strict(GeneratedMessage.Schema(policy, 1));
+        var schema = JsonDocument.Parse(strict.ToJsonString()).RootElement;
+
+        var type = schema.GetProperty("properties").GetProperty("type");
+
+        Assert.Equal(["string", "null"],
+            type.GetProperty("type").EnumerateArray().Select(e => e.GetString()!).ToArray());
+
+        Assert.Contains(JsonValueKind.Null,
+            type.GetProperty("enum").EnumerateArray().Select(e => e.ValueKind));
+    }
+
+    [Fact]
+    public void A_repository_that_enforces_the_convention_keeps_its_enum_exactly_as_authored()
+    {
+        // There, `type` is already required, so nothing about it is rewritten — and adding
+        // null would quietly re-permit the empty type the repository asked to forbid.
+        var policy = new CommitMessagePolicy
+        {
+            RequireConventionalCommit = true,
+            Types = ["feat", "fix"],
+        };
+
+        var strict = OpenAiProvider.Strict(GeneratedMessage.Schema(policy, 1));
+        var schema = JsonDocument.Parse(strict.ToJsonString()).RootElement;
+
+        var values = schema.GetProperty("properties").GetProperty("type")
+            .GetProperty("enum").EnumerateArray().Select(e => e.GetString()).ToArray();
+
+        Assert.Equal(["feat", "fix"], values.Select(v => v!).ToArray());
+        Assert.Equal(JsonValueKind.String,
+            schema.GetProperty("properties").GetProperty("type").GetProperty("type").ValueKind);
+    }
+
+    [Fact]
+    public async Task An_endpoint_that_rejects_usage_reporting_is_retried_without_it()
+    {
+        // The cheapest rung: losing it costs the cost line, not the message.
+        var handler = new ScriptedHandler(
+            ScriptedHandler.Json(HttpStatusCode.BadRequest,
+                """{"error":{"message":"stream_options is not supported"}}"""),
+            ScriptedHandler.Sse(
+                """{"choices":[{"delta":{"content":"{\"subject\":\"x\",\"body\":\"\"}"}}]}""",
+                "[DONE]"));
+
+        using var provider = Create(handler);
+        var outcome = await provider.CompleteAsync(Request(), _ => { });
+
+        Assert.Equal(2, handler.Bodies.Count);
+        Assert.False(JsonDocument.Parse(handler.Bodies[1]).RootElement
+            .TryGetProperty("stream_options", out _));
+
+        Assert.Contains("retried without usage reporting", outcome.Concessions);
+        Assert.Single(GeneratedMessage.ReadAll(outcome.Text));
+    }
+
+    [Fact]
     public void Strict_mode_reaches_objects_nested_inside_an_array()
     {
         // The multi-option schema nests a message object inside an array inside an object.
