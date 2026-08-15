@@ -16,11 +16,39 @@ public enum DiffFileState
     Summarised,
 }
 
+/// <summary>
+/// Why a file's patch is not in the prompt, which is a different question from whether it
+/// is.
+///
+/// The distinction earns its place because the answer decides what the model is told. A
+/// binary has no patch anybody could have shown it — nothing is missing, and warning about
+/// incompleteness there makes the app cry wolf on every commit that touches a PNG. A
+/// lockfile's patch exists and was withheld on purpose. A file cut by the budget is the only
+/// case where "too large to send" is a true sentence.
+/// </summary>
+public enum DiffOmission
+{
+    /// <summary>The whole patch was sent.</summary>
+    None,
+
+    /// <summary>There was no patch to send — binary, or a mode change with no textual diff.</summary>
+    Nothing,
+
+    /// <summary>Deliberately dropped as machine-written, whatever the budget.</summary>
+    Policy,
+
+    /// <summary>Cut, wholly or partly, to fit the budget.</summary>
+    Budget,
+}
+
 /// <summary>One file's line in the summary, and what became of its patch.</summary>
 public sealed record DiffFileNote
 {
     public required string Path { get; init; }
     public required DiffFileState State { get; init; }
+
+    /// <summary>Why the patch is missing, when it is.</summary>
+    public DiffOmission Omission { get; init; } = DiffOmission.None;
     public int LinesAdded { get; init; }
     public int LinesRemoved { get; init; }
     public bool IsBinary { get; init; }
@@ -55,8 +83,21 @@ public sealed record DiffDigest
     /// <summary>The patches that fitted, already assembled.</summary>
     public required string Body { get; init; }
 
-    /// <summary>Whether anything was cut. Stated to the model rather than left implicit.</summary>
-    public bool IsTruncated => Files.Any(f => f.State is not DiffFileState.Included);
+    /// <summary>
+    /// Whether a patch the model would have benefited from was left out — by the budget or by
+    /// policy. Stated to the model rather than left implicit.
+    ///
+    /// Deliberately not "any file was not Included": binaries and mode-only changes are
+    /// always summarised because there is nothing to show, and counting them would put an
+    /// incompleteness warning on every commit that touches a PNG.
+    /// </summary>
+    public bool IsPartial => Files.Any(f => f.Omission is DiffOmission.Policy or DiffOmission.Budget);
+
+    /// <summary>
+    /// Whether anything was left out specifically because it would not fit. The narrower
+    /// question, and the only one for which "the change was too large to send whole" is true.
+    /// </summary>
+    public bool WasCutForSize => Files.Any(f => f.Omission is DiffOmission.Budget);
 
     public int LinesAdded => Files.Sum(f => f.LinesAdded);
     public int LinesRemoved => Files.Sum(f => f.LinesRemoved);
@@ -79,14 +120,24 @@ public sealed record DiffDigest
 
         foreach (var file in Files) builder.Append("  ").Append(file.StatLine).Append('\n');
 
-        if (IsTruncated)
+        if (IsPartial)
         {
             // Said plainly, because a model shown a partial diff with no warning will happily
             // write "renames the parser and updates its tests" about the half it can see, and
             // there is no way to tell from the message that it never saw the rest.
+            //
+            // The cause is named rather than assumed. "Cut to fit a budget" is false for a
+            // lockfile, which was dropped on purpose and would have been dropped at any size,
+            // and a prompt that says a false thing about its own contents is a poor place to
+            // ask for accuracy.
             builder.Append(
-                "\nThis diff is INCOMPLETE — the patches below were cut to fit a budget. "
-                + "Files marked above are summarised or truncated. Describe the change from "
+                WasCutForSize
+                    ? "\nThis diff is INCOMPLETE — some patches were cut to fit a size budget, "
+                      + "and generated files are never sent. "
+                    : "\nThis diff is INCOMPLETE — generated files' patches are never sent. ");
+
+            builder.Append(
+                "The files marked above are summarised or truncated. Describe the change from "
                 + "the file list as a whole; do not claim to have reviewed every line, and do "
                 + "not describe a file whose patch you were not shown.\n");
         }
@@ -354,6 +405,7 @@ public static class DiffDigestBuilder
             var index = Array.FindIndex(candidates, c => c.Path == entry.Path);
 
             var state = DiffFileState.Summarised;
+            var omission = DiffOmission.Nothing;
             string? reason = null;
 
             if (entry.IsBinary)
@@ -363,10 +415,12 @@ public static class DiffDigestBuilder
             else if (IsGenerated(entry.Path))
             {
                 reason = "generated — patch not sent";
+                omission = DiffOmission.Policy;
             }
             else if (index < 0)
             {
                 reason = "patch not sent — too many files changed";
+                omission = DiffOmission.Budget;
             }
             else if (patches.TryGetValue(entry.Path, out var patch) && patch.Hunks.Count > 0)
             {
@@ -375,12 +429,20 @@ public static class DiffDigestBuilder
                 if (hunksKept == 0)
                 {
                     reason = "patch not sent — no budget left";
+                    omission = DiffOmission.Budget;
                 }
                 else
                 {
                     state = hunksKept == patch.Hunks.Count ? DiffFileState.Included : DiffFileState.Truncated;
                     if (state is DiffFileState.Truncated)
+                    {
                         reason = $"showing {hunksKept} of {patch.Hunks.Count} hunks";
+                        omission = DiffOmission.Budget;
+                    }
+                    else
+                    {
+                        omission = DiffOmission.None;
+                    }
 
                     body.Append("--- ").Append(entry.Path).Append(" ---\n").Append(text);
 
@@ -400,6 +462,7 @@ public static class DiffDigestBuilder
                 Path = entry.Path,
                 OldPath = entry.OldPath,
                 State = state,
+                Omission = omission,
                 LinesAdded = entry.Added,
                 LinesRemoved = entry.Removed,
                 IsBinary = entry.IsBinary,

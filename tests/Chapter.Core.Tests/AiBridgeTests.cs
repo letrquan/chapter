@@ -99,7 +99,7 @@ public class AiBridgeTests : IDisposable
 
         Assert.Equal(2, digest.Files.Count);
         Assert.All(digest.Files, f => Assert.Equal(DiffFileState.Included, f.State));
-        Assert.False(digest.IsTruncated);
+        Assert.False(digest.IsPartial);
 
         Assert.Contains("src/Parser.cs", digest.Body);
         Assert.Contains("+line 1", digest.Body);
@@ -134,7 +134,9 @@ public class AiBridgeTests : IDisposable
 
         // And the source file it was staged alongside is still there in full.
         Assert.Contains("class App", digest.Body);
-        Assert.True(digest.IsTruncated);
+        // Withheld on purpose, not for want of room — the budget here was never near.
+        Assert.True(digest.IsPartial);
+        Assert.False(digest.WasCutForSize);
         Assert.Contains("INCOMPLETE", digest.ToPrompt());
     }
 
@@ -189,7 +191,7 @@ public class AiBridgeTests : IDisposable
         var digest = await DiffDigestBuilder.ReadAsync(Git, root, characterBudget: 400);
 
         Assert.Equal(6, digest.Files.Count);
-        Assert.True(digest.IsTruncated);
+        Assert.True(digest.WasCutForSize);
         Assert.True(digest.Body.Length <= 400 + 6 * 80, "the body should stay near its budget");
 
         var prompt = digest.ToPrompt();

@@ -120,6 +120,16 @@ let choices: GeneratedMessage[] = []
 let askingForKey = false
 
 /**
+ * Set the instant a generation is asked for, before the round trip that returns its id.
+ *
+ * `writing` cannot do this job: it needs the id, which only exists once the call comes back,
+ * and the whole point of the call returning immediately is that there is a gap. Two presses
+ * of Ctrl+G inside that gap would otherwise both pass the guard, start two generations, and
+ * leave the first one running unwatched — streaming, billed, and dropped.
+ */
+let starting = false
+
+/**
  * What was staged when the message was written, so the panel can notice it moving.
  *
  * The situation this app is built for: an agent stages something else while the generated
@@ -165,6 +175,7 @@ export function initCommitPanel(element: HTMLElement, dependencies: Deps): void 
       // leaving the worktree — nulls `writing` first, so those results never reach this
       // branch. What does reach it is a refusal or a failure, with the box untouched.
       draftFor(result.worktreePath).message = replaced
+      writtenAgainst = null
 
       if (result.error) deps.toast('No message was written', result.error, 'error')
       render()
@@ -177,7 +188,6 @@ export function initCommitPanel(element: HTMLElement, dependencies: Deps): void 
     choices = result.options.length > 1 ? result.options : []
     lastCost = result.cost
     lastNote = result.note
-    writtenAgainst = view && view.worktreePath === result.worktreePath ? stagedSignature(view) : null
 
     render()
     void reviewDraft()
@@ -839,15 +849,22 @@ export function writeMessage(): void {
 }
 
 async function write(count: number): Promise<void> {
-  if (!view || writing) return
+  if (!view || writing || starting) return
 
   const worktreePath = view.worktreePath
   const draft = draftFor(worktreePath)
 
+  starting = true
+
   choices = []
   lastCost = null
   lastNote = null
-  writtenAgainst = null
+
+  // Captured now, not when the message comes back. The diff the model is about to be given
+  // is the index as it stands at this moment; by the time the words arrive an agent may have
+  // staged something else, and recording the staging *then* would compare the new state
+  // against itself and never notice — which is precisely the case this exists for.
+  writtenAgainst = stagedSignature(view)
 
   try {
     const started = await call('generateCommitMessage', {
@@ -871,12 +888,15 @@ async function write(count: number): Promise<void> {
 
     render()
   } catch (error) {
+    writtenAgainst = null
     deps.toast('Could not start writing', message(error), 'error')
 
     // The status is the likeliest thing to have gone stale — a key removed, the feature
     // switched off in settings.json since the panel last asked.
     ai = await call('getAiStatus').catch(() => ai)
     render()
+  } finally {
+    starting = false
   }
 }
 
@@ -886,6 +906,10 @@ function stopWriting(): void {
 
   const { id } = writing
   writing = null
+
+  // Whatever ends up in the box is now the user's, not something written against a
+  // particular staging — so there is nothing left for the "this has moved" note to be about.
+  writtenAgainst = null
 
   // Failure here is not worth reporting: the front-end has already stopped listening for
   // this id, so the worst case is a request that finishes and is ignored.

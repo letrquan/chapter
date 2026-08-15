@@ -182,8 +182,13 @@ public sealed class CommitMessageGenerator
                     .ConfigureAwait(false);
                 Raise(result);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
             {
+                // Guarded, because an HTTP timeout also arrives as a TaskCanceledException.
+                // Ungated, a request that hung for ninety seconds would be reported as
+                // "Generation cancelled." — and the user would reasonably believe they had
+                // pressed something. Anything not asked for falls through to Describe below,
+                // which has a sentence for exactly this.
                 Raise(new GenerationResult
                 {
                     Id = id,
@@ -335,9 +340,12 @@ public sealed class CommitMessageGenerator
             WorktreePath = worktreePath,
             Ok = true,
             Options = options,
+            // The narrower question of the two the digest answers. A commit that touches a
+            // lockfile is not "too large to send whole", and saying so would train people to
+            // ignore the one case where it is true.
+            DiffTruncated = digest.WasCutForSize,
             Cost = cost,
-            DiffTruncated = digest.IsTruncated,
-            Note = digest.IsTruncated
+            Note = digest.WasCutForSize
                 ? "The change was too large to send whole — some files were summarised rather than shown."
                 : null,
         };
@@ -446,13 +454,30 @@ public sealed class CommitMessageGenerator
             : $"Write {count} commit messages for this change — genuinely different framings, "
               + "not rewordings of one another. Best first.";
 
+        var effort = ParseEffort(ai.Effort);
+
+        // Thinking is off at the effort levels this app is built around, and that is what
+        // makes the small ceiling below safe. Left unset, a current model thinks adaptively,
+        // and thinking counts against `max_tokens` — so 1024 would be spent reasoning about a
+        // one-sentence answer and the JSON would arrive cut in half, reported to the user as
+        // "the reply was cut off". The comment on Effort has always said thinking buys
+        // nothing here; this is the line that makes it true.
+        //
+        // Above `high` the request is left alone instead: somebody who set `max` effort for a
+        // commit message asked for deliberation, and the right response is to give the reply
+        // room for it rather than to overrule them.
+        var deliberates = effort is Effort.Xhigh or Effort.Max;
+
+        var perMessage = deliberates ? Math.Max(ai.MaxTokens, 4096) : ai.MaxTokens;
+
         return new MessageCreateParams
         {
             Model = ai.Model,
             // Deliberately small. A commit message is short by definition, and this is one of
             // the few places where a low ceiling is a statement about the task rather than
             // about the budget. Several alternatives need proportionally more room.
-            MaxTokens = count <= 1 ? ai.MaxTokens : ai.MaxTokens * Math.Min(count, 4),
+            MaxTokens = count <= 1 ? perMessage : perMessage * Math.Min(count, 4),
+            Thinking = deliberates ? null : new ThinkingConfigParam(new ThinkingConfigDisabled()),
             System = new MessageCreateParamsSystem(system),
             Messages =
             [
@@ -466,8 +491,9 @@ public sealed class CommitMessageGenerator
             {
                 // Low is genuinely right here rather than merely cheap: the diff is already in
                 // front of the model and the answer is one sentence. Extended thinking buys
-                // nothing and delays a button the user is watching.
-                Effort = ParseEffort(ai.Effort),
+                // nothing and delays a button the user is watching — see Thinking above, which
+                // is where that is actually enforced.
+                Effort = effort,
 
                 // Structured, so conventional-commit conformance is a property of the response
                 // rather than something to check for afterwards with a regular expression.

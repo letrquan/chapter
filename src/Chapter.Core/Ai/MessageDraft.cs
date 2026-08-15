@@ -130,7 +130,22 @@ public sealed record GeneratedMessage
     /// Built rather than written out as a constant because it depends on the repository:
     /// where <see cref="CommitMessagePolicy.RequireConventionalCommit"/> is set, <c>type</c>
     /// becomes required and is restricted to that repository's own list, so the format is
-    /// enforced by the API rather than checked afterwards and complained about.
+    /// enforced by the API rather than checked afterwards and complained about. That is also
+    /// why the SDK's own attribute-driven schema inference is not used here — it describes a
+    /// fixed C# type, and this shape changes per repository.
+    ///
+    /// Two rules of the structured-output dialect have to be honoured by hand as a result,
+    /// and both are load-bearing rather than stylistic:
+    ///
+    /// <list type="bullet">
+    /// <item><c>additionalProperties: false</c> on <b>every</b> object, nested ones included.
+    /// The API rejects the request without it, and the rejection reads as a bad request —
+    /// which the UI would report as the diff being too large, sending the user off to shrink
+    /// a diff that was never the problem.</item>
+    /// <item>No <c>minItems</c> above 1, and no <c>maxItems</c>: array-size constraints are
+    /// not part of the dialect. The count has to be asked for in prose instead, which is why
+    /// it appears in the description below and in the user message.</item>
+    /// </list>
     /// </summary>
     public static Dictionary<string, JsonElement> Schema(CommitMessagePolicy policy, int optionCount)
     {
@@ -182,6 +197,7 @@ public sealed record GeneratedMessage
             ["required"] = conventional
                 ? new[] { "type", "subject", "body" }
                 : new[] { "subject", "body" },
+            ["additionalProperties"] = false,
         };
 
         var root = optionCount <= 1
@@ -194,13 +210,17 @@ public sealed record GeneratedMessage
                     ["options"] = new Dictionary<string, object>
                     {
                         ["type"] = "array",
-                        ["minItems"] = optionCount,
-                        ["maxItems"] = optionCount,
                         ["items"] = message,
-                        ["description"] = "Genuinely different framings of the same change, best first.",
+                        // Asked for in prose because minItems above 1 and maxItems are not
+                        // part of the dialect. Stating it twice — here and in the user
+                        // message — is cheap, and returning two when three were asked for is
+                        // a mild disappointment rather than a failure.
+                        ["description"] =
+                            $"Exactly {optionCount} genuinely different framings of the same change, best first.",
                     },
                 },
                 ["required"] = new[] { "options" },
+                ["additionalProperties"] = false,
             };
 
         // Round-tripped through JsonElement because that is the shape the SDK's schema

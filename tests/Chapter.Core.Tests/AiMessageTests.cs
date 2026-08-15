@@ -178,17 +178,51 @@ public class DiffBudgetTests
             Body = "--- A.cs ---\n@@ -1 +1 @@\n+x\n",
         };
 
-        Assert.False(digest.IsTruncated);
+        Assert.False(digest.IsPartial);
+        Assert.False(digest.WasCutForSize);
         Assert.DoesNotContain("INCOMPLETE", digest.ToPrompt());
         Assert.Contains("A.cs | +3 -0", digest.ToPrompt());
     }
 
     [Fact]
-    public void An_incomplete_digest_says_so_in_the_prompt()
+    public void A_binary_alongside_a_complete_diff_is_not_an_incomplete_diff()
+    {
+        // There is no patch anybody could have shown for a PNG, so nothing is missing. Warning
+        // about incompleteness here would put "I could not see the whole change" on every
+        // commit that touches an image, and a warning that fires constantly is one nobody
+        // reads on the day it matters.
+        var digest = new DiffDigest
+        {
+            Files =
+            [
+                new DiffFileNote { Path = "A.cs", State = DiffFileState.Included, LinesAdded = 3 },
+                new DiffFileNote
+                {
+                    Path = "assets/logo.png",
+                    State = DiffFileState.Summarised,
+                    Omission = DiffOmission.Nothing,
+                    IsBinary = true,
+                    Reason = "binary",
+                },
+            ],
+            Body = "--- A.cs ---\n@@ -1 +1 @@\n+x\n",
+        };
+
+        Assert.False(digest.IsPartial);
+        Assert.False(digest.WasCutForSize);
+        Assert.DoesNotContain("INCOMPLETE", digest.ToPrompt());
+    }
+
+    [Fact]
+    public void A_withheld_generated_file_is_incomplete_but_not_over_budget()
     {
         // Not decoration. A model handed a partial diff with no warning describes the half it
         // was shown as though it were the whole change, and nothing in the resulting message
         // reveals that it never saw the rest.
+        //
+        // But the *cause* has to be right too: a lockfile is dropped on purpose and would be
+        // dropped at any size, so telling the model it was "cut to fit a budget" makes the
+        // prompt say a false thing about its own contents — a poor place to ask for accuracy.
         var digest = new DiffDigest
         {
             Files =
@@ -198,6 +232,7 @@ public class DiffBudgetTests
                 {
                     Path = "package-lock.json",
                     State = DiffFileState.Summarised,
+                    Omission = DiffOmission.Policy,
                     LinesAdded = 4_102,
                     LinesRemoved = 3_988,
                     Reason = "generated — patch not sent",
@@ -208,14 +243,40 @@ public class DiffBudgetTests
 
         var prompt = digest.ToPrompt();
 
-        Assert.True(digest.IsTruncated);
+        Assert.True(digest.IsPartial);
+        Assert.False(digest.WasCutForSize);
         Assert.Contains("INCOMPLETE", prompt);
-        Assert.Contains("generated — patch not sent", prompt);
+        Assert.Contains("generated files' patches are never sent", prompt);
+        Assert.DoesNotContain("size budget", prompt);
 
         // The file list comes before the patches, so a cut anywhere downstream loses hunks
         // rather than losing the shape of the change.
         Assert.True(prompt.IndexOf("package-lock.json", StringComparison.Ordinal)
                     < prompt.IndexOf("Patches:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_file_cut_to_fit_says_it_was_cut_to_fit()
+    {
+        var digest = new DiffDigest
+        {
+            Files =
+            [
+                new DiffFileNote
+                {
+                    Path = "Parser.cs",
+                    State = DiffFileState.Truncated,
+                    Omission = DiffOmission.Budget,
+                    LinesAdded = 9_000,
+                    Reason = "showing 2 of 40 hunks",
+                },
+            ],
+            Body = "--- Parser.cs ---\n@@ -1 +1 @@\n+x\n",
+        };
+
+        Assert.True(digest.IsPartial);
+        Assert.True(digest.WasCutForSize);
+        Assert.Contains("size budget", digest.ToPrompt());
     }
 }
 
@@ -439,13 +500,61 @@ public class GeneratedMessageTests
     }
 
     [Fact]
-    public void Asking_for_several_wraps_the_schema_in_an_array_of_exactly_that_many()
+    public void Asking_for_several_wraps_the_schema_in_an_array_and_asks_for_the_count_in_prose()
     {
         var json = JsonSerializer.Serialize(GeneratedMessage.Schema(new CommitMessagePolicy(), 3));
 
         Assert.Contains("\"options\"", json);
-        Assert.Contains("\"minItems\":3", json);
-        Assert.Contains("\"maxItems\":3", json);
+        Assert.Contains("Exactly 3 genuinely different framings", json);
+
+        // Array-size constraints are not part of the structured-output dialect: minItems
+        // above 1 is unsupported and maxItems is not recognised at all. Sending either gets
+        // the whole request rejected, so the count has to be asked for in words.
+        Assert.DoesNotContain("minItems", json);
+        Assert.DoesNotContain("maxItems", json);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public void Every_object_in_the_schema_closes_itself_to_extra_properties(int optionCount)
+    {
+        // The rule that makes the difference between a working feature and one that rejects
+        // every request: `additionalProperties: false` is required on *each* object, nested
+        // ones included. Its absence comes back as a bad request, which the UI would report
+        // as the diff being too large — sending the user off to shrink something that was
+        // never the problem.
+        var schema = JsonSerializer.SerializeToElement(
+            GeneratedMessage.Schema(new CommitMessagePolicy(), optionCount));
+
+        var objects = 0;
+        Walk(schema, ref objects);
+
+        Assert.Equal(optionCount <= 1 ? 1 : 2, objects);
+
+        static void Walk(JsonElement element, ref int objects)
+        {
+            if (element.ValueKind is JsonValueKind.Array)
+            {
+                foreach (var item in element.EnumerateArray()) Walk(item, ref objects);
+                return;
+            }
+
+            if (element.ValueKind is not JsonValueKind.Object) return;
+
+            if (element.TryGetProperty("type", out var type)
+                && type.ValueKind is JsonValueKind.String
+                && type.GetString() == "object")
+            {
+                objects++;
+                Assert.True(
+                    element.TryGetProperty("additionalProperties", out var extra)
+                    && extra.ValueKind is JsonValueKind.False,
+                    "every object in the schema needs additionalProperties: false");
+            }
+
+            foreach (var property in element.EnumerateObject()) Walk(property.Value, ref objects);
+        }
     }
 }
 
