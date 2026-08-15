@@ -521,12 +521,16 @@ function renderWrite(state: CommitViewPayload, draft: CommitDraft): string {
   // commit cannot: there is no diff to write about.
   const hasSomethingToDescribe = draft.amend ? !state.isUnborn : state.staged.length > 0
 
+  // Named rather than assumed. Somebody pointed at a local endpoint should not be told to
+  // fetch a Claude key, and somebody with two accounts should be able to see which is in use.
+  const where = ai.baseUrl ? `${ai.model} at ${ai.baseUrl}` : ai.model
+
   const disabled = !needsKey && !hasSomethingToDescribe
   const title = needsKey
-    ? 'Add a Claude API key to write commit messages here'
+    ? `Add an API key (${ai.environmentVariable}) to write commit messages here`
     : disabled
       ? 'Stage something first — there is nothing to describe'
-      : `Write a message with ${ai.model} (Ctrl+G)`
+      : `Write a message with ${where} (Ctrl+G)`
 
   const again = draft.message.trim().length > 0
 
@@ -620,20 +624,21 @@ function renderChoices(): string {
  */
 function renderKeyPrompt(): string {
   const stored = ai?.source === 'stored'
+  const variable = ai?.environmentVariable ?? 'ANTHROPIC_API_KEY'
 
   return `
     <div class="commit-key">
       <div class="key-row">
         <input type="password" id="api-key" class="key-input" spellcheck="false"
-               autocomplete="off" placeholder="sk-ant-…" />
+               autocomplete="off" placeholder="${ai?.provider === 'openai' ? 'sk-…' : 'sk-ant-…'}" />
         <button class="btn small pop" data-action="save-key">Save</button>
         <button class="btn small" data-action="cancel-key">Cancel</button>
       </div>
       <div class="key-note">
-        Encrypted for your Windows account in <code>credentials.dat</code>, never written to
-        <code>settings.json</code>.${
-          stored ? ' Saving an empty box forgets the key already stored.' : ''
-        }
+        Stored for <strong>${esc(ai?.provider ?? 'anthropic')}</strong>, encrypted for your
+        Windows account in <code>credentials.dat</code> — never written to
+        <code>settings.json</code>. <code>${esc(variable)}</code> is used instead when this is
+        left empty.${stored ? ' Saving an empty box forgets the key already stored.' : ''}
       </div>
     </div>`
 }
@@ -945,7 +950,7 @@ async function saveKey(): Promise<void> {
     deps.toast(
       key.trim().length === 0 ? 'Key forgotten' : 'Key saved',
       key.trim().length === 0
-        ? 'Chapter will fall back to ANTHROPIC_API_KEY if it is set.'
+        ? `Chapter will fall back to ${result.status.environmentVariable} if it is set.`
         : 'Encrypted for your Windows account.',
     )
   } catch (error) {
