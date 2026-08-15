@@ -165,11 +165,22 @@ it something to act on.
 Backend is C#, so this lives in `Chapter.Core` using the official SDK
 (`dotnet add package Anthropic`). No new process, no Node.
 
-- [ ] **[BLOCKER]** Credential handling. The SDK reads `ANTHROPIC_API_KEY`, or an
+**Complete.** The first thing the app does that leaves the machine, which shaped every
+decision below more than the feature itself did.
+
+- [x] **[BLOCKER]** Credential handling. The SDK reads `ANTHROPIC_API_KEY`, or an
       `ant auth login` profile under `~/.config/anthropic/`. For a desktop app, decide:
       reuse an existing profile, or store a key via Windows DPAPI. **Do not** put it in
       `settings.json` — that file is plaintext in `%LOCALAPPDATA%`.
-- [ ] **[BLOCKER][HARD]** Diff budgeting. `katclub` has a single staged file at **+14,057
+      → All three, in that order: a key typed into Chapter wins, then the environment
+      variable, then a login profile. `ApiKeyStore` encrypts its own key with DPAPI into
+      `credentials.dat`, so it is tied to the Windows account rather than to the disk.
+      The order only matters when two exist at once, and the UI names the one it used —
+      an inherited environment variable belonging to a different account is exactly the
+      kind of thing that should be visible rather than inferred. The key is asked for
+      inline in the commit box, because there is no settings screen and it must never be
+      the thing `settings.json` is opened for.
+- [x] **[BLOCKER][HARD]** Diff budgeting. `katclub` has a single staged file at **+14,057
       lines**; a naive "send the diff" blows the context and the bill. Needs:
       - `client.Messages.CountTokens(...)` to measure before sending — **never** estimate
         with a GPT tokenizer, the counts are wrong for Claude
@@ -177,30 +188,76 @@ Backend is C#, so this lives in `Chapter.Core` using the official SDK
         truncated hunks for large ones, generated/lock files dropped entirely
       - explicit "diff was truncated" signal in the prompt so the model doesn't claim
         completeness it can't have
-- [ ] Model: `claude-opus-5` (1M context, $5/$25 per MTok). Expose the choice — some
+      → `DiffDigest`. All three, and the selection strategy is **water-filling** rather
+      than first-come: every file gets an equal share, the ones that fit release their
+      surplus, and the ones that do not split what is left. That is the difference between
+      eight small files arriving whole beside a truncated giant, and the giant arriving
+      whole while the eight are dropped — the second reads as working and produces a
+      message about one file in a nine-file commit. Truncation happens on hunk boundaries
+      only; half a hunk is not a diff. The file list is sent before the patches, so a cut
+      anywhere downstream loses hunks rather than losing the shape of the change.
+- [x] Model: `claude-opus-5` (1M context, $5/$25 per MTok). Expose the choice — some
       people will want `claude-haiku-4-5` for a commit message. Make it a setting; don't
       pick cheap on their behalf.
-- [ ] `output_config.effort` — `low` is genuinely right for a short scoped task like this.
+      → `settings.json`, under `ai`. A string rather than an enum: the model list moves
+      faster than this app ships.
+- [x] `output_config.effort` — `low` is genuinely right for a short scoped task like this.
       Worth a setting alongside model.
-- [ ] `max_tokens` deliberately small (~1024). A commit message is short by definition;
+      → Both, and an unrecognised value falls back to `low` rather than failing — that
+      file is hand-edited.
+- [x] `max_tokens` deliberately small (~1024). A commit message is short by definition;
       this is one of the few legitimate reasons to go below the usual default.
-- [ ] Streaming (`client.Messages.CreateStreaming`) into the message box, so it feels
+      → 1024, and proportionally more for a multi-option request, where three bodies do
+      not fit in one message's worth of room.
+- [x] Streaming (`client.Messages.CreateStreaming`) into the message box, so it feels
       instant rather than a 3-second freeze.
-- [ ] **Prompt caching** on the stable prefix — system prompt plus repo conventions.
+      → And it is what forced the shape of the whole feature. The bridge gives up on a
+      call after 60s, so `generateCommitMessage` returns an id at once and the text
+      arrives on the event channel — the progress protocol the cross-cutting section
+      below asks for, in its first use.
+- [x] **Prompt caching** on the stable prefix — system prompt plus repo conventions.
       Minimum cacheable prefix on Opus 5 is 512 tokens, so a decent convention block
       qualifies. Cache reads are ~0.1× input price; regenerate becomes nearly free.
       Keep the diff *after* the cache breakpoint — it changes every call.
-- [ ] **Structured output** (`output_config.format` with a JSON schema) for
+      → Two system blocks, the breakpoint on the second. The diff is in the user message,
+      after it. A prefix under the minimum is simply not cached, so there is nothing to
+      detect or work around.
+- [x] **Structured output** (`output_config.format` with a JSON schema) for
       type / scope / subject / body, rather than parsing prose. Makes conventional-commit
       enforcement mechanical.
-- [ ] Learn the repo's style — feed the last ~20 subject lines from `git log` so generated
+      → And where a repository sets `requireConventionalCommit`, *its own* type list
+      becomes the schema's enum, so the API cannot return one this repo does not use.
+      Streaming and structured output are not in tension: the JSON is scanned for the
+      subject and body as it arrives, purely so the box fills, and the finished text is
+      parsed properly and replaces it. That scanner rereads the whole buffer every time —
+      escapes and multi-byte characters straddle network frames, and a parser that cannot
+      see a frame boundary cannot get one wrong.
+- [x] Learn the repo's style — feed the last ~20 subject lines from `git log` so generated
       messages match existing conventions instead of imposing new ones.
-- [ ] Regenerate, and "give me 3 options"
-- [ ] Handle `stop_reason == "refusal"` and network failure — fall back to a manual
+      → `CommitMessageReader.RecentSubjectsAsync`, which Phase 1 wrote for this. Where the
+      repository has not opted into conventional commits, the model is told to look at
+      those subjects and *not* introduce a prefix if they carry none.
+- [x] Regenerate, and "give me 3 options"
+      → Regenerate is the same button, relabelled once there is a message to replace.
+      Options come back in one reply rather than three streams — three messages appearing
+      a character at a time in three boxes is not something anybody wants to watch.
+- [x] Handle `stop_reason == "refusal"` and network failure — fall back to a manual
       message box, never block the commit
-- [ ] Cost visibility. Show tokens/cost per generation somewhere; without it nobody can
+      → Every failure path ends with the message box exactly as usable as it was before
+      the button was pressed. Each API failure gets a sentence saying what to do rather
+      than what went wrong internally.
+- [x] Cost visibility. Show tokens/cost per generation somewhere; without it nobody can
       tell whether this feature is cheap or quietly expensive.
-- [ ] Offline: the whole feature must degrade to "type it yourself" with no error spam
+      → In the commit box after each generation, and in the operation log permanently.
+      Cached input is called out separately, since it is the reason regenerating is nearly
+      free and that is invisible if the tokens are summed. A model missing from the price
+      table shows tokens and no dollars: `settings.json` is hand-edited, and an invented
+      price presented confidently is worse than an honest omission.
+- [x] Offline: the whole feature must degrade to "type it yourself" with no error spam
+      → With no credential the button offers to take a key rather than reporting an error;
+      with the feature switched off it does not render at all. A failed generation is one
+      toast, and the token count falls back to a local estimate rather than surfacing a
+      network error from the measuring step and naming the wrong cause.
 
 ## Phase 3 — Branches, stash, refs
 
@@ -304,6 +361,10 @@ Nothing else on this list is unique to this app. These are.
 - [ ] **Dry-run / preview** for anything destructive
 - [ ] **Long-running operations** — the bridge has a 60s call timeout (`bridge.ts`); clone,
       fetch, and push will exceed it. Needs a progress protocol, not a longer timeout.
+      *(Phase 2 built the first one and it is the shape to copy: the call returns an id
+      immediately and the work reports on the event channel, with a `cancel` method taking
+      the same id. Message generation was the first thing here that could legitimately
+      outlast a git command; push and clone are the next.)*
 - [ ] **Multi-instance safety** — two Chapter windows on the same repo, or Chapter plus
       Rider, both writing
       *(One case is handled: a hunk selection carries a fingerprint of the diff it was made
@@ -321,9 +382,10 @@ Nothing else on this list is unique to this app. These are.
 1. ~~**Phase 0**~~ — done. Unavoidable, and the riskiest thing to skip.
 2. ~~**Phase 1**~~ — done. Staging, committing. The smallest slice that makes the app a git
    client rather than a viewer.
-3. **Phase 2** — AI commit messages. **Next**, and it starts with the one decision the
-   roadmap leaves open below: where the API key lives.
-4. **Phase 3** — branches and stash, needed before checkout is safe
+3. ~~**Phase 2**~~ — done. AI commit messages. The open decision it started with — where
+   the API key lives — is answered in `ApiKeyStore`, and the streaming it needed is the
+   long-running-operation protocol the rest of the roadmap was going to need anyway.
+4. **Phase 3** — **Next**: branches and stash, needed before checkout is safe.
 5. **Phase 7** — worktree management. Cheap, and this app should obviously own it.
 6. **Phase 5** — push/pull. Blocked on credentials, so start that spike early.
 7. **Phase 4 + 6** — history and conflicts. Both large; conflicts especially.

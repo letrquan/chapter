@@ -14,6 +14,7 @@ something, one keystroke opens the file at that exact line in Rider or VS Code.
 
 Review is the point, but you can also act on what you find: stage by file, hunk or line,
 discard, edit, and commit — without leaving the window or losing which worktree you were in.
+Claude will write the commit message if you would rather not.
 
 It is a review cockpit, not an IDE.
 
@@ -25,6 +26,7 @@ It is a review cockpit, not an IDE.
 | Node.js | 20+ (build only — the app does not run Node) |
 | WebView2 runtime | Ships with Windows 11; otherwise install the Evergreen runtime |
 | git | On `PATH` |
+| Claude API key | Optional — only for generated commit messages. Everything else works without one. |
 
 ## Build
 
@@ -75,6 +77,7 @@ src/Chapter.Core/     Everything that is not UI. Fully testable without a window
   Git/                git.exe plumbing: worktrees, status, diffs, base resolution
   Indexing/           Roslyn syntactic index, file watcher, fuzzy search
   Editors/            Rider / VS Code detection and launching
+  Ai/                 Commit messages: the key, the diff budget, the call
   Contracts/          The front-end protocol, and the dispatcher that serves it
 
 src/Chapter.App/      Thin WPF shell. Hosts WebView2 and pumps messages. Little else.
@@ -90,8 +93,9 @@ tests/Chapter.Core.Tests/
 **WebView2, not Electron.** The UI is HTML and Monaco, but there is no Node and no bundled
 Chromium: WebView2 runs in-process with .NET on the Edge runtime already present on
 Windows. The entire backend — git, indexing, watching — is C#. The front-end is served
-from a folder mapped onto a virtual host, so there is no local web server and no network
-access at runtime.
+from a folder mapped onto a virtual host, so there is no local web server, and the page
+itself reaches the network never: the one feature that leaves the machine is commit-message
+generation, and the request is made by the backend.
 
 **Monaco does the diffing.** The backend supplies the base side (`git show <sha>:<path>`)
 and the working side; Monaco's diff editor renders it. That is also why every language
@@ -176,6 +180,44 @@ open file whenever the watcher fires, which was correct while nothing was editab
 destructive the moment something was; a model with unsaved edits is now left alone and you
 are told the file changed underneath you.
 
+**Claude writes the message, and says what that cost.** The commit box has a button above it
+that fills the message from what is staged. It is a shortcut to filling a textarea, never a
+replacement for one: with no key it offers to take one, with no network it says so once, and
+if it refuses or returns nonsense the box is exactly as typeable as it was before.
+
+The interesting problem is not the call, it is what to send. A single staged file can be
+fourteen thousand lines, and "send the diff" then spends the context window and the bill on a
+request whose answer is one sentence. Generated files — lockfiles, minified bundles,
+`*.Designer.cs` — are dropped entirely, since nobody reads a lockfile diff to find out what a
+commit did. What is left shares a token budget by water-filling: each file gets an equal
+share, files that fit release their surplus, and files that do not split what remains. Eight
+small files therefore arrive whole beside a truncated giant, rather than the giant arriving
+whole and the eight being dropped — which looks like it is working and produces a message
+about one file in a nine-file commit. The budget is measured with the API's own token counter
+rather than estimated, and whatever was cut is stated in the prompt, because a model shown
+half a diff with no warning describes that half as though it were the change.
+
+Messages come back as structured fields rather than prose, so where a repository has opted
+into conventional commits its own type list becomes the response schema and the format is
+enforced by the API rather than checked afterwards. The last twenty subjects from `git log`
+go in the prompt — if this repository does not use type prefixes, the model is told not to
+introduce them. The system prompt and those conventions sit behind a cache breakpoint and the
+diff after it, which is why regenerating costs almost nothing.
+
+Every generation is recorded in the operation log with its token count and price, and the
+price is shown in the commit box too. Without that nobody can tell whether the feature is
+cheap or quietly expensive, and the answer differs by an order of magnitude between models.
+A model missing from the price table shows tokens and no dollars rather than a made-up
+figure.
+
+**The key is never in `settings.json`.** That file is plaintext in `%LOCALAPPDATA%`, it is
+documented as hand-editable, and this README already tells you to open it — so the key lives
+in `credentials.dat` beside it, encrypted with DPAPI under your Windows account. Chapter looks
+for a key you typed into it first, then `ANTHROPIC_API_KEY`, then an `ant auth login` profile,
+and the commit box names which one it is using. That last part matters: Chapter is often
+launched by an agent harness, and an inherited environment variable belonging to a different
+account should be visible rather than inferred.
+
 **Adding another language** means implementing `ILanguageIndexer` and registering Monaco
 providers for it. Nothing above that seam is C#-specific.
 
@@ -195,6 +237,7 @@ providers for it. Nothing above that seam is C#-specific.
 | `Ctrl` `W` | Close tab |
 | `Ctrl` `R` | Refresh |
 | `Ctrl` `S` | Save the open file |
+| `Ctrl` `G` | Write the commit message with Claude (again to stop) |
 | `Ctrl` `Enter` | Commit (from the message box) |
 | `Alt` `↑` `↓` | Previous / next hunk |
 | `Ctrl` `Alt` `Z` | Undo the last git operation |
@@ -226,12 +269,33 @@ committing during an incident because the subject ran to 74 characters.
 Signing is left to the repository's `commit.gpgsign`. Passing `--no-gpg-sign` on your behalf
 would produce unsigned commits on a branch that requires them.
 
+## Generated messages
+
+The key is entered in the commit box, not here — see above for where it goes. Everything
+else is a setting, and every default is deliberate:
+
+```jsonc
+// %LOCALAPPDATA%\Chapter\settings.json
+"ai": {
+  "enabled": true,
+  "model": "claude-opus-5",     // a string, because the model list moves faster than this app
+  "effort": "low",              // right for a short scoped task, not merely cheap
+  "maxTokens": 1024,            // a commit message is short by definition
+  "optionCount": 3,             // how many alternatives "3 options" asks for
+  "inputTokenBudget": 24000     // ceiling on the whole request; the diff is cut to fit
+}
+```
+
+`enabled: false` removes the button entirely rather than showing a disabled one, and stops
+the app reading a credential at all. Set `model` to `claude-haiku-4-5` if you would rather
+spend a tenth as much; Chapter will not pick cheap on your behalf.
+
 ## Not in this version
 
 No build or test runner · no branch, stash or tag management · no fetch/pull/push · no
 merge or rebase · no conflict-resolution UI beyond detecting and listing conflicted files ·
 no history or blame view · no worktree create or delete · no cross-worktree comparison · no
-AI-generated commit messages · no semantic (MSBuild) engine · no semantic navigation for
-languages other than C# — diff and browse work for everything Monaco tokenises.
+semantic (MSBuild) engine · no semantic navigation for languages other than C# — diff and
+browse work for everything Monaco tokenises.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for where those sit.
