@@ -344,7 +344,7 @@ function renderBox(state: CommitViewPayload, draft: CommitDraft): string {
         </label>
       </div>
 
-      <button class="btn primary commit-submit" data-action="commit"
+      <button class="btn pop commit-submit" data-action="commit"
               ${blocked ? 'disabled' : ''}
               title="${blocked ? esc(state.blockedReason ?? '') : `${label} (Ctrl+Enter)`}">
         ${icons.commit}<span>${label}${

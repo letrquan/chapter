@@ -4,84 +4,151 @@
    Two complete palettes, selected by a data-theme attribute set on <html> from
    script. Resolving "system" in JS rather than with a media query keeps a single
    source of truth and makes the theme toggle work in both directions.
+
+   The palette is derived from the application mark: an electric cyan → azure →
+   violet gradient on a near-black indigo. That is where --accent and
+   --brand-gradient come from, and why the greys are cool rather than neutral.
+
+   Three background levels carry the whole layout:
+
+     --bg-shell     the window ground, darkest — nothing sits *on* it but cards
+     --bg-surface   the cards themselves: rail, file list, editor
+     --bg-subtle    recessed areas *inside* a card — segmented tracks, code blocks
+
+   Anything floating above the layout (palette, toasts, Monaco's own widgets)
+   uses --bg-raised, which is lighter than the card it covers so the elevation
+   reads without relying on the shadow alone.
    ========================================================================== */
 
 [data-theme='dark'] {
-  --bg-app: #0b0d10;
-  --bg-rail: #0e1116;
-  --bg-panel: #0d1014;
-  --bg-elevated: #151a21;
-  --bg-hover: #171d25;
-  --bg-active: #1d2530;
-  --bg-input: #11151b;
+  --bg-shell: #050609;
+  --bg-surface: #0d0f15;
+  --bg-subtle: #12141c;
+  --bg-raised: #161a25;
+  --bg-hover: #171b25;
+  --bg-active: #1e2331;
+  --bg-input: #0a0c11;
 
-  --border: #1b2129;
-  --border-strong: #29323d;
+  --border: #1b1f29;
+  --border-strong: #2a3040;
 
-  --text: #e3e8ef;
-  --text-dim: #8b95a7;
-  --text-faint: #5b6575;
+  --text: #e7eaf0;
+  --text-dim: #8d96a8;
+  --text-faint: #5c6577;
 
-  --accent: #7c9cff;
-  --accent-bg: #7c9cff1f;
-  --accent-border: #7c9cff59;
+  /* Interactive accent. --accent is for text and icons, where it needs to clear
+     contrast against the card; --accent-fill is the solid form, which does not. */
+  --accent: #5b8cff;
+  --accent-fill: #2f6bf5;
+  --accent-fill-text: #ffffff;
+  --accent-soft: #5b8cff1c;
+  --accent-ring: #5b8cff4d;
 
   --add: #3fb950;
   --del: #f85149;
   --mod: #d29922;
-  --new: #58a6ff;
-  --gone: #8b95a7;
+  --rename: #a78bfa;
 
-  --shadow-popover: 0 16px 48px -12px #000000cc, 0 0 0 1px #ffffff0f;
-  --scroll-thumb: #2a323d;
-  --scroll-thumb-hover: #3a4552;
+  --shadow-card: 0 1px 3px #00000038;
+  --shadow-popover: 0 18px 50px -14px #000000d9, 0 0 0 1px #ffffff12;
+  --scroll-thumb: #262d3a;
+  --scroll-thumb-hover: #37404f;
 
   color-scheme: dark;
 }
 
 [data-theme='light'] {
-  --bg-app: #ffffff;
-  --bg-rail: #f7f8fa;
-  --bg-panel: #fbfcfd;
-  --bg-elevated: #ffffff;
-  --bg-hover: #eff1f5;
-  --bg-active: #e4e8ee;
+  --bg-shell: #e8ebf0;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f2f4f8;
+  --bg-raised: #ffffff;
+  --bg-hover: #f0f2f7;
+  --bg-active: #e4e8f0;
   --bg-input: #ffffff;
 
-  --border: #e2e6ec;
-  --border-strong: #cdd4dd;
+  --border: #e0e4eb;
+  --border-strong: #c7ced9;
 
-  --text: #1c2129;
-  --text-dim: #5f6977;
-  --text-faint: #8c95a3;
+  --text: #14181f;
+  --text-dim: #5a6474;
+  --text-faint: #89929f;
 
-  --accent: #3b62d9;
-  --accent-bg: #3b62d914;
-  --accent-border: #3b62d94d;
+  --accent: #2f5fe0;
+  --accent-fill: #2f5fe0;
+  --accent-fill-text: #ffffff;
+  --accent-soft: #2f5fe012;
+  --accent-ring: #2f5fe040;
 
   --add: #1a7f37;
   --del: #cf222e;
   --mod: #9a6700;
-  --new: #0969da;
-  --gone: #5f6977;
+  --rename: #8250df;
 
-  --shadow-popover: 0 16px 48px -16px #1c212933, 0 0 0 1px #1c212914;
-  --scroll-thumb: #cdd4dd;
-  --scroll-thumb-hover: #b4bcc8;
+  --shadow-card: 0 1px 2px #14181f14;
+  --shadow-popover: 0 18px 50px -16px #14181f38, 0 0 0 1px #14181f14;
+  --scroll-thumb: #ccd3dd;
+  --scroll-thumb-hover: #aeb7c4;
 
   color-scheme: light;
 }
 
 :root {
-  --rail-w: 232px;
-  --files-w: 296px;
+  --rail-w: 236px;
+  --files-w: 300px;
   --row-h: 26px;
 
-  --font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  /* The gutter between cards. The splitters live in it, so the two are one number. */
+  --gap: 8px;
+
+  /* Radii step in threes so nesting stays concentric: a 5px row inside a 9px card
+     with 4px of padding lines up at the corner. */
+  --r-xs: 3px;
+  --r-sm: 5px;
+  --r-md: 7px;
+  --r-lg: 9px;
+  --r-xl: 13px;
+
+  /* Every control on a toolbar is this tall, so rows of mixed buttons and
+     segmented switches sit on one baseline without per-case nudging. */
+  --control-h: 26px;
+
+  --font-ui: 'Inter Variable', Inter, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'Cascadia Code', 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
 
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
-  --fast: 120ms var(--ease);
+  --fast: 80ms var(--ease);
+  --medium: 150ms var(--ease);
+
+  --brand-gradient: linear-gradient(150deg, #00b6fb 0%, #0072fb 46%, #7129fb 100%);
+}
+
+/* Latin only. The interface renders file paths and English labels, so the
+   Cyrillic/Greek/Vietnamese subsets would be ~200 KB of never-drawn glyphs.
+   Copied to dist/fonts by build.mjs rather than bundled, so the URL stays stable
+   and the Content-Security-Policy's font-src 'self' covers it.
+
+   font-display: block, not swap — the file is local and loads in a few
+   milliseconds, so blocking avoids a visible reflow on every launch. */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: block;
+  font-weight: 100 900;
+  src: url('/fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: block;
+  font-weight: 100 900;
+  src: url('/fonts/inter-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB,
+    U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
 /* ==========================================================================
@@ -100,15 +167,19 @@ body {
 }
 
 body {
-  background: var(--bg-app);
+  background: var(--bg-shell);
   color: var(--text);
   font-family: var(--font-ui);
   font-size: 13px;
-  line-height: 1.5;
+  /* Inter's regular reads heavier than Segoe's on a dark ground; 440 puts the
+     apparent weight back where a UI wants it. */
+  font-weight: 440;
+  line-height: 1.45;
   /* A desktop app should not feel like a web page: no text selection outside
      the editor, and no rubber-banding. */
   user-select: none;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button {
@@ -124,7 +195,7 @@ button:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
 }
 
 ::-webkit-scrollbar {
@@ -152,52 +223,90 @@ button:focus-visible,
   background: transparent;
 }
 
+/* Small uppercase label used for every panel heading. */
+.eyebrow {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
 /* ==========================================================================
    Shell layout
+
+   One grid, three cards. The rail, the file list and the editor each float on
+   the shell with a gutter between them, which is what gives the window depth
+   without a single divider line.
    ========================================================================== */
 
 .app {
+  position: relative;
   display: grid;
-  grid-template-columns: var(--rail-w) 1fr;
+  grid-template-columns: var(--rail-w) var(--files-w) 1fr;
+  gap: var(--gap);
+  padding: var(--gap);
   height: 100vh;
   overflow: hidden;
 }
 
-.main {
-  display: grid;
-  grid-template-rows: auto 1fr;
+.card {
+  position: relative;
   min-width: 0;
-  overflow: hidden;
-}
-
-.body {
-  display: grid;
-  grid-template-columns: var(--files-w) 1fr;
   min-height: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  /* Required, not cosmetic: the editor and both scrolling lists would otherwise
+     paint over the rounded corners they sit inside. */
   overflow: hidden;
 }
 
-/* Drag handles sit on top of the panel edge so the 1px border stays crisp. */
+/* Drag handles fill the gutter between two cards, so the whole visible gap is
+   grabbable rather than a hairline on the border.
+
+   They are children of the shell rather than of the card they resize. A handle sitting
+   just outside its own card is exactly what `overflow: hidden` above exists to clip, so
+   nesting them left both splitters invisible and unhittable — offsetting from the shell
+   is what keeps them in the gutter and on screen. */
 .splitter {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 9px;
+  top: var(--gap);
+  bottom: var(--gap);
+  width: var(--gap);
   cursor: col-resize;
   z-index: 20;
 }
 
+#split-rail {
+  left: calc(var(--gap) + var(--rail-w));
+}
+
+#split-files {
+  left: calc(var(--gap) + var(--rail-w) + var(--gap) + var(--files-w));
+}
+
+/* A short rounded pill rather than an edge-to-edge line: it reads as a handle,
+   and it does not draw a bright rule down the full height of the window. */
 .splitter::after {
   content: '';
   position: absolute;
-  inset: 0 4px;
-  background: transparent;
-  transition: background var(--fast);
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 28px;
+  transform: translate(-50%, -50%) scaleY(0.4);
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity var(--fast), transform var(--medium);
 }
 
 .splitter:hover::after,
 .splitter.dragging::after {
-  background: var(--accent);
+  opacity: 1;
+  transform: translate(-50%, -50%) scaleY(1);
 }
 
 body.resizing {
@@ -209,33 +318,40 @@ body.resizing {
    ========================================================================== */
 
 .rail {
-  position: relative;
   display: grid;
   grid-template-rows: auto 1fr auto;
-  background: var(--bg-rail);
-  border-right: 1px solid var(--border);
-  min-height: 0;
 }
 
+/* Brand row. Gives the window an identity of its own, which is otherwise the
+   one thing a WebView-hosted app never has. */
 .rail-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px 8px;
+  gap: 8px;
+  padding: 10px 10px 10px 12px;
+  border-bottom: 1px solid var(--border);
 }
 
-.rail-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+.brand-mark {
+  flex: none;
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.brand-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--text);
 }
 
 .rail-body {
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 8px 8px;
+  padding: 8px;
 }
 
 .rail-foot {
@@ -244,30 +360,30 @@ body.resizing {
 }
 
 .repo-group + .repo-group {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .repo-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   width: 100%;
-  padding: 6px 6px 6px 4px;
-  color: var(--text-dim);
-  font-size: 11px;
+  padding: 4px 4px 4px 2px;
+  color: var(--text-faint);
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   transition: color var(--fast);
 }
 
 .repo-head:hover {
-  color: var(--text);
+  color: var(--text-dim);
 }
 
 .repo-head .chevron {
-  transition: transform var(--fast);
+  transition: transform var(--medium);
   flex: none;
   opacity: 0.7;
 }
@@ -288,10 +404,13 @@ body.resizing {
 
 .repo-remove {
   margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
   opacity: 0;
   color: var(--text-faint);
-  padding: 2px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   transition: opacity var(--fast), color var(--fast), background var(--fast);
 }
 
@@ -312,8 +431,8 @@ body.resizing {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 6px 8px 6px 10px;
-  border-radius: 6px;
+  padding: 5px 8px 5px 10px;
+  border-radius: var(--r-sm);
   text-align: left;
   color: var(--text-dim);
   transition: background var(--fast), color var(--fast);
@@ -334,8 +453,8 @@ body.resizing {
   content: '';
   position: absolute;
   left: 0;
-  top: 6px;
-  bottom: 6px;
+  top: 5px;
+  bottom: 5px;
   width: 2px;
   border-radius: 0 2px 2px 0;
   background: var(--accent);
@@ -352,7 +471,12 @@ body.resizing {
 
 .wt-icon {
   flex: none;
-  opacity: 0.75;
+  opacity: 0.7;
+}
+
+.wt.active .wt-icon {
+  color: var(--accent);
+  opacity: 1;
 }
 
 .wt-label {
@@ -366,14 +490,14 @@ body.resizing {
 
 .wt-badge {
   flex: none;
-  min-width: 18px;
-  height: 17px;
+  min-width: 17px;
+  height: 16px;
   padding: 0 5px;
-  border-radius: 9px;
-  background: var(--accent-bg);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
   font-size: 10.5px;
-  font-weight: 650;
+  font-weight: 620;
   font-variant-numeric: tabular-nums;
   display: grid;
   place-items: center;
@@ -382,11 +506,13 @@ body.resizing {
 .wt-badge.zero {
   background: none;
   color: var(--text-faint);
-  font-weight: 500;
+  font-weight: 440;
 }
 
 .wt-key {
   flex: none;
+  min-width: 11px;
+  text-align: right;
   font-size: 10px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -394,10 +520,7 @@ body.resizing {
   transition: opacity var(--fast);
 }
 
-.rail:hover .wt-key {
-  opacity: 1;
-}
-
+.rail:hover .wt-key,
 .wt.active .wt-key {
   opacity: 1;
 }
@@ -410,26 +533,41 @@ body.resizing {
   justify-content: center;
   gap: 7px;
   width: 100%;
-  padding: 7px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--border-strong);
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+  box-shadow: inset 0 0 0 1px var(--border);
   color: var(--text-dim);
   font-size: 12.5px;
-  transition: background var(--fast), color var(--fast), border-color var(--fast);
+  transition: background var(--fast), color var(--fast), box-shadow var(--fast);
 }
 
 .btn:hover {
   background: var(--bg-hover);
   color: var(--text);
-  border-color: var(--accent-border);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.btn.pop {
+  background: var(--accent-fill);
+  color: var(--accent-fill-text);
+  box-shadow: none;
+}
+
+.btn.pop:hover {
+  background: color-mix(in srgb, var(--accent-fill) 88%, white);
+  color: var(--accent-fill-text);
+  box-shadow: none;
 }
 
 .icon-btn {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 5px;
+  flex: none;
+  width: var(--control-h);
+  height: var(--control-h);
+  border-radius: var(--r-sm);
   color: var(--text-faint);
   transition: background var(--fast), color var(--fast);
 }
@@ -441,17 +579,87 @@ body.resizing {
 
 .icon-btn.on {
   color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Segmented switch — a recessed track with one raised item, so which option is
+   live is legible without relying on colour alone. */
+.segmented {
+  display: flex;
+  flex: none;
+  height: var(--control-h);
+  padding: 2px;
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.segmented button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--fast), color var(--fast);
+}
+
+/* Hairline between adjacent unselected items. Inside the button's own box, not at
+   right: -1px — the overflow: hidden that gives the label its ellipsis would clip
+   anything hanging over the edge. */
+.segmented button::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  width: 1px;
+  height: 45%;
+  background: var(--border-strong);
+  opacity: 0.7;
+}
+
+/* Dropped either side of the raised item, which has an edge of its own already. Each
+   separator belongs to the button on its left, so the one to the *left* of the
+   selection is the previous sibling's — reachable only through :has. */
+.segmented button:last-child::after,
+.segmented button.on::after,
+.segmented button:has(+ .on)::after {
+  display: none;
+}
+
+/* Preview is offered only for files that have something to render, and it hides itself
+   with the hidden attribute. The display rule above is an author rule, so it beats the
+   user agent's [hidden] { display: none } and has to be restated — without this the
+   button stays on screen for every file, and running the Markdown renderer over a .cs
+   is a click away. */
+.segmented button[hidden] {
+  display: none;
+}
+
+.segmented button:hover {
+  color: var(--text);
+}
+
+.segmented button.on {
+  background: var(--bg-surface);
+  box-shadow: 0 1px 2px #0000001f, inset 0 0 0 1px var(--border-strong);
+  color: var(--text);
 }
 
 /* ==========================================================================
-   Tab strip
+   Tab strip — row one of the editor card
    ========================================================================== */
 
 .tabstrip {
   display: flex;
   align-items: stretch;
-  height: 36px;
-  background: var(--bg-rail);
+  height: 34px;
+  background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
   overflow-y: hidden;
@@ -462,12 +670,17 @@ body.resizing {
   display: none;
 }
 
+/* display:flex above outranks the user-agent [hidden] rule, so it has to be restated. */
+.tabstrip[hidden] {
+  display: none;
+}
+
 .tab {
   position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 0 10px 0 12px;
+  padding: 0 8px 0 12px;
   max-width: 220px;
   /* Without this, flex shrinks every tab towards nothing as more are opened, so names
      collapse to a couple of characters long before the strip starts scrolling. */
@@ -476,6 +689,7 @@ body.resizing {
   color: var(--text-dim);
   font-size: 12.5px;
   white-space: nowrap;
+  cursor: pointer;
   transition: background var(--fast), color var(--fast);
 }
 
@@ -484,8 +698,10 @@ body.resizing {
   color: var(--text);
 }
 
+/* The active tab takes the card's own surface, so it reads as continuous with
+   the editor underneath it rather than as another item in a list. */
 .tab.active {
-  background: var(--bg-app);
+  background: var(--bg-surface);
   color: var(--text);
 }
 
@@ -506,8 +722,8 @@ body.resizing {
 
 .tab-dot {
   flex: none;
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
 }
 
@@ -517,7 +733,7 @@ body.resizing {
   place-items: center;
   width: 17px;
   height: 17px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   color: var(--text-faint);
   opacity: 0;
   transition: opacity var(--fast), background var(--fast), color var(--fast);
@@ -543,63 +759,16 @@ body.resizing {
    ========================================================================== */
 
 .files {
-  position: relative;
   display: grid;
   /* head, scope switch, base description, then the scrolling list */
   grid-template-rows: auto auto auto 1fr;
-  background: var(--bg-panel);
-  border-right: 1px solid var(--border);
-  min-height: 0;
-}
-
-/* Which slice of the work is on screen. Sits directly above the list it filters. */
-.scope-switch {
-  display: flex;
-  gap: 2px;
-  margin: 2px 10px 6px;
-  padding: 2px;
-  border-radius: 6px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-}
-
-.scope-switch button {
-  /* Basis auto rather than 0, so spare width is shared out from each label's natural
-     size instead of forcing four equal columns and truncating the longest. */
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 3px 4px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  color: var(--text-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: background var(--fast), color var(--fast);
-}
-
-.scope-switch button:hover {
-  color: var(--text);
-}
-
-.scope-switch button.on {
-  background: var(--bg-active);
-  color: var(--text);
 }
 
 .files-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px 6px;
-}
-
-.files-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  gap: 7px;
+  padding: 9px 8px 8px 12px;
 }
 
 .files-count {
@@ -624,8 +793,21 @@ body.resizing {
   color: var(--del);
 }
 
+/* Which slice of the work is on screen. Sits directly above the list it filters. */
+.scope-switch {
+  margin: 0 10px 8px;
+}
+
+/* Basis auto rather than 0, so spare width is shared out from each label's natural
+   size instead of forcing four equal columns and truncating the longest. */
+.scope-switch button {
+  flex: 1 1 auto;
+  padding: 0 4px;
+  font-size: 10.5px;
+}
+
 .files-base {
-  padding: 0 12px 8px;
+  padding: 0 12px 9px;
   font-size: 11px;
   color: var(--text-faint);
   overflow: hidden;
@@ -642,11 +824,11 @@ body.resizing {
 .file-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
   height: var(--row-h);
-  padding: 0 6px;
-  border-radius: 5px;
+  padding: 0 7px;
+  border-radius: var(--r-sm);
   text-align: left;
   color: var(--text-dim);
   transition: background var(--fast), color var(--fast);
@@ -657,45 +839,42 @@ body.resizing {
   color: var(--text);
 }
 
+/* The current file drives the whole editor pane, so it gets the accent rather
+   than the same neutral highlight as a hover. */
 .file-row.active {
-  background: var(--bg-active);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
   color: var(--text);
 }
 
-/* Status letter: colour carries the meaning, the letter confirms it. */
+/* Status letter. Colour carries the meaning and the letter confirms it — a bare
+   glyph rather than a filled chip, which stops a long list reading as confetti. */
 .file-kind {
   flex: none;
-  width: 15px;
-  height: 15px;
-  display: grid;
-  place-items: center;
-  border-radius: 3px;
-  font-size: 9.5px;
+  width: 11px;
+  text-align: center;
+  font-size: 10.5px;
   font-weight: 700;
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .k-added,
 .k-untracked {
   color: var(--add);
-  background: color-mix(in srgb, var(--add) 16%, transparent);
 }
 
 .k-modified {
   color: var(--mod);
-  background: color-mix(in srgb, var(--mod) 16%, transparent);
 }
 
 .k-deleted {
   color: var(--del);
-  background: color-mix(in srgb, var(--del) 16%, transparent);
 }
 
 .k-renamed,
 .k-copied,
 .k-typechanged {
-  color: var(--new);
-  background: color-mix(in srgb, var(--new) 16%, transparent);
+  color: var(--rename);
 }
 
 .file-name {
@@ -755,23 +934,27 @@ body.resizing {
    ========================================================================== */
 
 .editor {
-  /* Flex rather than fixed grid rows, because the hunk bar between the head and the host
-     comes and goes. With `grid-template-rows: auto 1fr` its arrival pushed the editor into
-     the wrong row and collapsed it; a column that simply gives the leftover height to the
-     host does not care how many siblings precede it. */
+  /* Flex rather than fixed rows, because two of the four children come and go
+     independently: the tab strip collapses when nothing is open, and the hunk bar only
+     exists while a stageable diff is on screen.
+     `grid-template-rows: auto auto 1fr` is right for exactly one of those four
+     combinations. With the strip hidden the editor lands in row two and takes its content
+     height — which for a Monaco instance that positions itself absolutely is nothing at
+     all — and with the hunk bar shown there is no row left for it. A column that hands the
+     leftover height to whichever child asked for it does not care how many siblings
+     precede it. */
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  background: var(--bg-app);
 }
 
 .editor-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 34px;
-  padding: 0 10px 0 14px;
+  height: 36px;
+  padding: 0 8px 0 14px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -786,7 +969,7 @@ body.resizing {
 
 .crumb-file {
   color: var(--text);
-  font-weight: 550;
+  font-weight: 560;
 }
 
 .crumb-sep {
@@ -806,30 +989,13 @@ body.resizing {
   gap: 4px;
 }
 
-/* Segmented diff/code switch. */
-.segmented {
-  display: flex;
-  padding: 2px;
-  border-radius: 6px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-}
-
-.segmented button {
-  padding: 3px 11px;
-  border-radius: 4px;
-  font-size: 11.5px;
-  color: var(--text-dim);
-  transition: background var(--fast), color var(--fast);
-}
-
-.segmented button:hover {
-  color: var(--text);
-}
-
-.segmented button.on {
-  background: var(--bg-active);
-  color: var(--text);
+/* A hairline between the segmented switch and the icon buttons beside it, so the
+   toolbar reads as two groups rather than five loose controls. */
+.toolbar-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--border);
 }
 
 .editor-host {
@@ -845,11 +1011,7 @@ body.resizing {
   position: absolute;
   inset: 0;
   z-index: 5;
-  background: var(--bg-app);
-}
-
-#editor-empty kbd {
-  margin: 0 1px;
+  background: var(--bg-surface);
 }
 
 .editor-host .monaco-editor {
@@ -877,10 +1039,20 @@ body.resizing {
   margin-bottom: 2px;
 }
 
+/* The application mark, which keeps its own colour — the point of it is to be
+   the one saturated thing on an otherwise empty pane. */
+.placeholder .brand-mark {
+  width: 44px;
+  height: 44px;
+  opacity: 1;
+  margin-bottom: 10px;
+}
+
 .placeholder-title {
   color: var(--text-dim);
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 560;
+  letter-spacing: -0.005em;
 }
 
 .placeholder-hint {
@@ -891,7 +1063,7 @@ body.resizing {
 
 .placeholder .btn {
   width: auto;
-  padding: 7px 16px;
+  padding: 0 16px;
   margin-top: 6px;
 }
 
@@ -902,6 +1074,29 @@ body.resizing {
   max-width: 520px;
   word-break: break-word;
   user-select: text;
+}
+
+/* Keyboard legend on the empty editor. Two columns so the keys line up in a
+   block instead of wrapping mid-shortcut. */
+.shortcuts {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 7px 16px;
+  align-items: center;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.shortcuts .keys {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.shortcuts .what {
+  justify-self: start;
 }
 
 .files-empty {
@@ -916,8 +1111,8 @@ body.resizing {
 .skeleton {
   height: var(--row-h);
   margin: 3px 6px;
-  border-radius: 5px;
-  background: linear-gradient(90deg, var(--bg-hover) 25%, var(--bg-elevated) 50%, var(--bg-hover) 75%);
+  border-radius: var(--r-sm);
+  background: linear-gradient(90deg, var(--bg-subtle) 25%, var(--bg-hover) 50%, var(--bg-subtle) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.2s linear infinite;
 }
@@ -933,12 +1128,17 @@ body.resizing {
 
 kbd {
   display: inline-block;
+  min-width: 18px;
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--border-strong);
-  background: var(--bg-input);
-  font-family: var(--font-mono);
+  border-bottom-width: 2px;
+  background: var(--bg-subtle);
+  font-family: var(--font-ui);
   font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: center;
   color: var(--text-dim);
 }
 
@@ -952,7 +1152,7 @@ kbd {
   z-index: 4; /* over the Monaco hosts, under the empty-state overlay */
   overflow-y: auto;
   overflow-x: hidden;
-  background: var(--bg-app);
+  background: var(--bg-surface);
   padding: 28px 40px 64px;
   user-select: text;
 }
@@ -967,6 +1167,7 @@ kbd {
   margin: 0 auto;
   color: var(--text);
   font-size: 14px;
+  font-weight: 400;
   line-height: 1.72;
 }
 
@@ -974,9 +1175,9 @@ kbd {
   max-width: 76ch;
   margin: 0 auto 24px;
   padding: 10px 14px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border);
-  background: var(--bg-panel);
+  background: var(--bg-subtle);
 }
 
 .md-frontmatter pre {
@@ -1000,7 +1201,8 @@ kbd {
 .md-body h6 {
   margin: 1.9em 0 0.6em;
   line-height: 1.3;
-  font-weight: 650;
+  font-weight: 640;
+  letter-spacing: -0.012em;
   color: var(--text);
 }
 
@@ -1092,8 +1294,8 @@ kbd {
 /* Inline code */
 .md-body code {
   padding: 0.16em 0.38em;
-  border-radius: 4px;
-  background: var(--bg-elevated);
+  border-radius: var(--r-xs);
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
   font-family: var(--font-mono);
   font-size: 0.875em;
@@ -1104,9 +1306,9 @@ kbd {
 .md-body pre {
   margin: 0 0 1.2em;
   padding: 12px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border);
-  background: var(--bg-panel);
+  background: var(--bg-subtle);
   overflow-x: auto;
   line-height: 1.6;
 }
@@ -1146,18 +1348,18 @@ kbd {
 }
 
 .md-body th {
-  background: var(--bg-panel);
-  font-weight: 650;
+  background: var(--bg-subtle);
+  font-weight: 640;
 }
 
 .md-body tr:nth-child(2n) td {
-  background: color-mix(in srgb, var(--bg-panel) 55%, transparent);
+  background: color-mix(in srgb, var(--bg-subtle) 55%, transparent);
 }
 
 .md-body img {
   max-width: 100%;
   height: auto;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   margin: 0.3em 0;
 }
 
@@ -1167,9 +1369,9 @@ kbd {
   display: inline-block;
   max-width: 100%;
   padding: 5px 10px;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   border: 1px dashed var(--border-strong);
-  background: var(--bg-panel);
+  background: var(--bg-subtle);
   color: var(--text-faint);
   font-size: 11.5px;
   font-family: var(--font-mono);
@@ -1192,7 +1394,7 @@ kbd {
   justify-content: center;
   align-items: flex-start;
   padding-top: 12vh;
-  background: color-mix(in srgb, var(--bg-app) 55%, transparent);
+  background: color-mix(in srgb, var(--bg-shell) 55%, transparent);
   backdrop-filter: blur(3px);
 }
 
@@ -1204,9 +1406,9 @@ kbd {
   width: min(680px, 88vw);
   display: flex;
   flex-direction: column;
-  border-radius: 10px;
+  border-radius: var(--r-xl);
   border: 1px solid var(--border-strong);
-  background: var(--bg-elevated);
+  background: var(--bg-raised);
   box-shadow: var(--shadow-popover);
   overflow: hidden;
   animation: palette-in 140ms var(--ease);
@@ -1249,7 +1451,7 @@ kbd {
   align-items: baseline;
   gap: 9px;
   padding: 6px 10px;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   cursor: pointer;
 }
 
@@ -1258,8 +1460,8 @@ kbd {
 }
 
 .palette-row.selected {
-  background: var(--accent-bg);
-  box-shadow: inset 0 0 0 1px var(--accent-border);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
 }
 
 .palette-primary {
@@ -1303,8 +1505,8 @@ kbd {
 
 .toasts {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  right: 18px;
+  bottom: 18px;
   z-index: 100;
   display: flex;
   flex-direction: column;
@@ -1317,10 +1519,11 @@ kbd {
      pointer events back — otherwise the git error text inside cannot be selected, and
      with DevTools off in Release there is no other way to copy it. */
   pointer-events: auto;
+  position: relative;
   max-width: 380px;
-  padding: 10px 14px;
-  border-radius: 8px;
-  background: var(--bg-elevated);
+  padding: 10px 14px 10px 16px;
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-popover);
   font-size: 12.5px;
@@ -1328,8 +1531,25 @@ kbd {
   animation: toast-in 200ms var(--ease);
 }
 
+/* Colour the edge rather than the whole card: an error toast must be obvious at a
+   glance without becoming the brightest thing on screen. */
+.toast::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+
 .toast.error {
   border-color: color-mix(in srgb, var(--del) 45%, var(--border-strong));
+}
+
+.toast.error::before {
+  background: var(--del);
 }
 
 .toast-detail {
@@ -1374,6 +1594,14 @@ kbd {
   overflow: hidden;
 }
 
+/* The display above is an author rule, so it outranks the user agent's
+   [hidden] { display: none } whatever the specificity, and has to be restated — the same
+   trap that kept the Preview button on the toolbar for every file. Without this the panel
+   is permanently visible and sits on top of the file list in every scope. */
+.commit-panel[hidden] {
+  display: none;
+}
+
 .commit-scroll {
   overflow-y: auto;
   overflow-x: hidden;
@@ -1402,7 +1630,7 @@ kbd {
   padding: 6px 6px 5px;
   /* Opaque: rows scroll underneath this, and a translucent header over monospace text
      is unreadable at 11px. */
-  background: var(--bg-panel);
+  background: var(--bg-surface);
 }
 
 .group-title {
@@ -1429,7 +1657,7 @@ kbd {
   align-items: center;
   gap: 4px;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   font-size: 10.5px;
   color: var(--text-faint);
   /* Revealed on hover of the group, not permanently: two always-visible bulk buttons
@@ -1460,7 +1688,7 @@ kbd {
   display: flex;
   align-items: center;
   height: var(--row-h);
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   transition: background var(--fast);
 }
 
@@ -1510,7 +1738,7 @@ kbd {
   place-items: center;
   width: 21px;
   height: 21px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
   color: var(--text-faint);
   transition: background var(--fast), color var(--fast);
 }
@@ -1531,7 +1759,7 @@ kbd {
   place-items: center;
   width: 14px;
   height: 14px;
-  border-radius: 3px;
+  border-radius: var(--r-xs);
   font-size: 10px;
   font-weight: 700;
   color: var(--del);
@@ -1546,7 +1774,7 @@ kbd {
   gap: 7px;
   padding: 9px 10px 11px;
   border-top: 1px solid var(--border);
-  background: var(--bg-rail);
+  background: var(--bg-subtle);
 }
 
 .commit-head {
@@ -1578,7 +1806,7 @@ kbd {
   width: 100%;
   min-height: 58px;
   padding: 7px 9px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   border: 1px solid var(--border);
   background: var(--bg-input);
   color: var(--text);
@@ -1591,7 +1819,7 @@ kbd {
 
 .commit-message:focus {
   outline: none;
-  border-color: var(--accent-border);
+  border-color: var(--accent-ring);
 }
 
 .commit-message::placeholder {
@@ -1621,12 +1849,12 @@ kbd {
 .commit-note {
   font-size: 11px;
   line-height: 1.45;
-  color: var(--new);
+  color: var(--rename);
 }
 
 .commit-blocked {
   padding: 6px 8px;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-dim);
@@ -1659,25 +1887,20 @@ kbd {
   cursor: default;
 }
 
-.btn.primary {
-  color: var(--text);
-  background: var(--accent-bg);
-  border-color: var(--accent-border);
-}
-
-.btn.primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
-}
-
+/* The filled primary is `.btn.pop`, defined with the rest of the design system above.
+   Destructive actions get the same treatment in red rather than a new shape — and the
+   border comes from an inset shadow, not a border property, because `.btn` has no border
+   to colour. */
 .btn.danger {
   color: var(--del);
-  border-color: color-mix(in srgb, var(--del) 45%, transparent);
   background: color-mix(in srgb, var(--del) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--del) 45%, transparent);
 }
 
 .btn.danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--del) 22%, transparent);
   color: var(--del);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--del) 62%, transparent);
 }
 
 .btn:disabled {
@@ -1687,7 +1910,8 @@ kbd {
 
 .btn.small {
   width: auto;
-  padding: 4px 9px;
+  height: var(--control-h);
+  padding: 0 9px;
   font-size: 11.5px;
 }
 
@@ -1750,9 +1974,9 @@ kbd {
   gap: 10px;
   max-width: min(680px, calc(100% - 32px));
   padding: 8px 10px 8px 14px;
-  border-radius: 7px;
+  border-radius: var(--r-md);
   border: 1px solid color-mix(in srgb, var(--mod) 45%, transparent);
-  background: var(--bg-elevated);
+  background: var(--bg-raised);
   box-shadow: var(--shadow-popover);
   font-size: 12px;
   line-height: 1.45;
@@ -1798,9 +2022,9 @@ kbd {
   flex-direction: column;
   gap: 10px;
   padding: 18px;
-  border-radius: 10px;
+  border-radius: var(--r-xl);
   border: 1px solid var(--border-strong);
-  background: var(--bg-elevated);
+  background: var(--bg-raised);
   box-shadow: var(--shadow-popover);
   animation: confirm-rise 140ms var(--ease);
 }
@@ -1827,7 +2051,7 @@ kbd {
 .confirm-detail {
   margin: 0;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--r-md);
   background: var(--bg-input);
   border: 1px solid var(--border);
   list-style: none;
@@ -1855,7 +2079,7 @@ kbd {
 
 .confirm-recovery.permanent {
   padding: 7px 9px;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   color: var(--del);
   background: color-mix(in srgb, var(--del) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--del) 32%, transparent);
@@ -1891,9 +2115,16 @@ kbd {
   height: 32px;
   padding: 0 10px 0 12px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
+  background: var(--bg-subtle);
   font-size: 11.5px;
   color: var(--text-dim);
+}
+
+/* Restated for the same reason as .commit-panel[hidden]: the display above beats the
+   user agent's rule, so without this the bar never hides and offers to stage hunks of
+   whatever file happens to be open. */
+.hunk-bar[hidden] {
+  display: none;
 }
 
 .hunk-nav {

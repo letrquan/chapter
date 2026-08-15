@@ -8,6 +8,25 @@ await mkdir('dist', { recursive: true })
 await cp('index.html', 'dist/index.html')
 
 /**
+ * The interface font, copied rather than bundled.
+ *
+ * Letting esbuild inline it through the woff2 loader would give it a content-hashed
+ * name, which the stylesheet cannot reference by hand. Copying to a fixed path keeps
+ * the @font-face URL stable, and an absolute `/fonts/...` resolves against the virtual
+ * host, so the Content-Security-Policy's `font-src 'self'` covers it.
+ *
+ * Latin subsets only: the UI draws file paths and English labels, and the Cyrillic,
+ * Greek and Vietnamese cuts would be a few hundred kilobytes of glyphs never rendered.
+ */
+const INTER = 'node_modules/@fontsource-variable/inter/files'
+
+await mkdir('dist/fonts', { recursive: true })
+for (const subset of ['latin', 'latin-ext']) {
+  const file = `inter-${subset}-wght-normal.woff2`
+  await cp(`${INTER}/${file}`, `dist/fonts/${file}`)
+}
+
+/**
  * Everything is bundled to static files and served from a folder mapped onto a virtual
  * host by WebView2 — no dev server, no CDN, no network access at runtime.
  */
@@ -20,6 +39,9 @@ const options = {
   sourcemap: watch ? 'inline' : false,
   logLevel: 'info',
   outdir: 'dist',
+  // The @font-face URLs above are copied by hand, so esbuild must leave them as
+  // written rather than trying to resolve them off the filesystem.
+  external: ['/fonts/*'],
   entryPoints: {
     app: 'src/main.ts',
     // Monaco computes diffs and tokenises off the main thread. Without this entry the

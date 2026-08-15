@@ -80,7 +80,7 @@ export function confirm(options: ConfirmOptions): Promise<boolean> {
         </div>
         <div class="confirm-actions">
           <button class="btn" data-confirm-cancel>Cancel</button>
-          <button class="btn ${permanent ? 'danger' : 'primary'}" data-confirm-ok>
+          <button class="btn ${permanent ? 'danger' : 'pop'}" data-confirm-ok>
             ${esc(options.confirmLabel)}
           </button>
         </div>

@@ -7,27 +7,31 @@
         Height="820" Width="1360"
         MinHeight="520" MinWidth="880"
         WindowStartupLocation="CenterScreen"
-        Background="#0B0D10">
+        Background="#050609">
 
+    <!-- The colours here are the dark palette's shell and text tokens, which is what the
+         app opens as. ApplyWindowChrome repaints all of them at load, including the
+         native caption, so a light-theme launch never shows this set. -->
     <Grid>
         <!-- The WebView paints nothing until the first frame arrives; matching the app's
              background here is what stops a white flash on every launch. -->
-        <wv2:WebView2 x:Name="WebView" DefaultBackgroundColor="#0B0D10" />
+        <wv2:WebView2 x:Name="WebView" DefaultBackgroundColor="#050609" />
 
         <!-- Shown only if WebView2 fails to start, which otherwise leaves a blank window
              with no explanation. -->
         <Border x:Name="ErrorPanel"
                 Visibility="Collapsed"
-                Background="#0B0D10"
+                Background="#050609"
                 Padding="48">
             <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="560">
-                <TextBlock Text="Chapter could not start"
-                           Foreground="#E6EDF3"
+                <TextBlock x:Name="ErrorTitle"
+                           Text="Chapter could not start"
+                           Foreground="#E7EAF0"
                            FontSize="20"
                            FontWeight="SemiBold"
                            Margin="0,0,0,12" />
                 <TextBlock x:Name="ErrorText"
-                           Foreground="#8B949E"
+                           Foreground="#8D96A8"
                            FontSize="13"
                            TextWrapping="Wrap"
                            LineHeight="20" />

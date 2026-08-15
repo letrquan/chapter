@@ -31,7 +31,7 @@ import {
 } from './commit'
 import { isConfirmOpen } from './confirm'
 import { initHunkBar, showHunkBar, hideHunkBar, stepHunk, updateSelectionState } from './hunks'
-import { icons, kindLetter } from './icons'
+import { brandMark, icons, kindLetter } from './icons'
 import { registerCSharpNavigation, setNavigateHandler } from './navigation'
 import { openPalette, close as closePalette, isOpen as isPaletteOpen } from './palette'
 import { renderPreview, cancelPreview } from './preview'
@@ -172,66 +172,70 @@ function toast(message: string, detail?: string, kind: 'info' | 'error' = 'info'
    Shell markup
    ========================================================================== */
 
+/**
+ * The window is three cards on a shell: worktrees, changed files, editor. Tabs belong
+ * to the editor card rather than spanning the window, because that is what they are
+ * scoped to — closing one only ever affects the pane below them.
+ */
 function renderShell(): void {
   document.getElementById('root')!.innerHTML = `
     <div class="app">
-      <aside class="rail" id="rail">
+      <aside class="rail card" id="rail">
         <div class="rail-head">
-          <span class="rail-title">Worktrees</span>
+          ${brandMark(18)}
+          <span class="brand-name">Chapter</span>
           <button class="icon-btn" id="theme-toggle" title="Toggle theme"></button>
         </div>
         <div class="rail-body" id="rail-body"></div>
         <div class="rail-foot">
           <button class="btn" id="add-repo">${icons.plus}<span>Add repository</span></button>
         </div>
-        <div class="splitter" id="split-rail" style="right:-4px"></div>
       </aside>
 
-      <div class="main">
-        <div class="tabstrip" id="tabstrip"></div>
-        <div class="body">
-          <section class="files">
-            <div class="files-head">
-              <span class="files-title">Changed</span>
-              <span class="files-count" id="files-count"></span>
-              <span class="files-stat" id="files-stat"></span>
-              <button class="icon-btn" id="undo" title="Nothing to undo" disabled>${icons.undo}</button>
-              <button class="icon-btn" id="refresh" title="Refresh (Ctrl+R)">${icons.refresh}</button>
-            </div>
-            <div class="scope-switch" id="scope-switch">
-              ${SCOPES.map(
-                (scope) => `
-                  <button data-scope="${scope.id}" title="${scope.title}"
-                          class="${scope.id === 'branch' ? 'on' : ''}">${scope.label}</button>`,
-              ).join('')}
-            </div>
-            <div class="files-base" id="files-base"></div>
-            <div class="files-list" id="files-list"></div>
-            <div class="commit-panel" id="commit-panel" hidden></div>
-            <div class="splitter" id="split-files" style="right:-4px"></div>
-          </section>
-
-          <section class="editor">
-            <div class="editor-head">
-              <div class="crumbs" id="crumbs"></div>
-              <div class="editor-actions">
-                <div class="segmented" id="mode-switch">
-                  <button data-mode="diff" class="on">Diff</button>
-                  <button data-mode="code">Code</button>
-                  <button data-mode="preview" id="mode-preview" hidden>Preview</button>
-                </div>
-                <button class="icon-btn" id="split-toggle" title="Toggle inline / side-by-side">${icons.diff}</button>
-                <button class="icon-btn" id="open-external" title="Open in external editor">${icons.external}</button>
-              </div>
-            </div>
-            <div class="hunk-bar" id="hunk-bar" hidden></div>
-            <div class="editor-host" id="editor-host">
-              <div class="markdown-preview" id="preview-host" hidden></div>
-              <div class="placeholder" id="editor-empty">${EMPTY_STATE_HTML}</div>
-            </div>
-          </section>
+      <section class="files card">
+        <div class="files-head">
+          <span class="eyebrow">Changed</span>
+          <span class="files-count" id="files-count"></span>
+          <span class="files-stat" id="files-stat"></span>
+          <button class="icon-btn" id="undo" title="Nothing to undo" disabled>${icons.undo}</button>
+          <button class="icon-btn" id="refresh" title="Refresh (Ctrl+R)">${icons.refresh}</button>
         </div>
-      </div>
+        <div class="segmented scope-switch" id="scope-switch">
+          ${SCOPES.map(
+            (scope) => `
+              <button data-scope="${scope.id}" title="${scope.title}"
+                      class="${scope.id === 'branch' ? 'on' : ''}">${scope.label}</button>`,
+          ).join('')}
+        </div>
+        <div class="files-base" id="files-base"></div>
+        <div class="files-list" id="files-list"></div>
+        <div class="commit-panel" id="commit-panel" hidden></div>
+      </section>
+
+      <section class="editor card">
+        <div class="tabstrip" id="tabstrip"></div>
+        <div class="editor-head">
+          <div class="crumbs" id="crumbs"></div>
+          <div class="editor-actions">
+            <div class="segmented" id="mode-switch">
+              <button data-mode="diff" class="on">Diff</button>
+              <button data-mode="code">Code</button>
+              <button data-mode="preview" id="mode-preview" hidden>Preview</button>
+            </div>
+            <span class="toolbar-sep"></span>
+            <button class="icon-btn" id="split-toggle" title="Toggle inline / side-by-side">${icons.diff}</button>
+            <button class="icon-btn" id="open-external" title="Open in external editor">${icons.external}</button>
+          </div>
+        </div>
+        <div class="hunk-bar" id="hunk-bar" hidden></div>
+        <div class="editor-host" id="editor-host">
+          <div class="markdown-preview" id="preview-host" hidden></div>
+          <div class="placeholder" id="editor-empty">${EMPTY_STATE_HTML}</div>
+        </div>
+      </section>
+
+      <div class="splitter" id="split-rail"></div>
+      <div class="splitter" id="split-files"></div>
     </div>
   `
 }
@@ -425,11 +429,16 @@ function renderTabs(): void {
 
   if (!state.active) {
     strip.innerHTML = '<div class="tabstrip-spacer"></div>'
+    strip.hidden = true
     return
   }
 
   const entry = worktreeState(state.active)
   const changes = entry.changes
+
+  // An empty strip is a bar of nothing above a pane of nothing. Collapsing it lets the
+  // editor card start at its toolbar, the way it does before anything is opened.
+  strip.hidden = entry.tabs.length === 0
 
   const tabs = entry.tabs
     .map((tab) => {
@@ -466,7 +475,7 @@ function dotColour(kind: string): string {
     case 'modified':
       return 'mod'
     default:
-      return 'new'
+      return 'rename'
   }
 }
 
@@ -934,14 +943,28 @@ function showNotice(title: string, detail: string): void {
   empty.style.display = 'grid'
 }
 
+/** The keyboard legend doubles as the app's only documentation of itself. */
+const SHORTCUTS: [keys: string, what: string][] = [
+  ['<kbd>Ctrl</kbd> <kbd>1</kbd>–<kbd>9</kbd>', 'Switch worktree'],
+  ['<kbd>Ctrl</kbd> <kbd>P</kbd>', 'Find file'],
+  ['<kbd>Ctrl</kbd> <kbd>T</kbd>', 'Find symbol'],
+  ['<kbd>Ctrl</kbd> <kbd>D</kbd>', 'Diff or code'],
+  ['<kbd>Ctrl</kbd> <kbd>S</kbd>', 'Save the open file'],
+  // The three the commit view adds. This legend is the only place the app documents
+  // itself, so a binding missing from it is a binding nobody finds.
+  ['<kbd>Alt</kbd> <kbd>↑</kbd> <kbd>↓</kbd>', 'Previous / next hunk'],
+  ['<kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Z</kbd>', 'Undo the last git operation'],
+  ['<kbd>Ctrl</kbd> <kbd>R</kbd>', 'Refresh'],
+]
+
 const EMPTY_STATE_HTML = `
+  ${brandMark(44)}
   <div class="placeholder-title">Nothing open</div>
-  <div class="placeholder-hint">
-    Pick a changed file to see its diff.
-    <br /><br />
-    <kbd>Ctrl</kbd> <kbd>1</kbd>–<kbd>9</kbd> switch worktree ·
-    <kbd>Ctrl</kbd> <kbd>D</kbd> diff or code ·
-    <kbd>Ctrl</kbd> <kbd>R</kbd> refresh
+  <div class="placeholder-hint">Pick a changed file to see its diff.</div>
+  <div class="shortcuts">
+    ${SHORTCUTS.map(
+      ([keys, what]) => `<span class="keys">${keys}</span><span class="what">${what}</span>`,
+    ).join('')}
   </div>`
 
 /* ==========================================================================
@@ -1220,7 +1243,14 @@ function wireEvents(): void {
   document.getElementById('add-repo')!.addEventListener('click', () => void addRepo())
 
   document.getElementById('theme-toggle')!.addEventListener('click', () => {
-    applyTheme(state.theme === 'dark' ? 'light' : 'dark')
+    const next = state.theme === 'dark' ? 'light' : 'dark'
+    applyTheme(next)
+
+    // Sent here rather than from applyTheme, which startup also calls — with the
+    // *resolved* theme, so persisting there would quietly turn a "system" preference
+    // into a fixed one on the first launch. The host both stores it and repaints the
+    // native caption, which is the one surface the page cannot draw itself.
+    void call('setTheme', { theme: next }).catch(() => {})
   })
 
   document.getElementById('refresh')!.addEventListener('click', () => {

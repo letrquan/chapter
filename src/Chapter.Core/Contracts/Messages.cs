@@ -277,6 +277,12 @@ public sealed record MessageReviewRequest
     public string Message { get; init; } = "";
 }
 
+public sealed record SetThemeRequest
+{
+    /// <summary>"dark", "light" or "system".</summary>
+    public string Theme { get; init; } = "system";
+}
+
 // ---------------------------------------------------------------------------
 // Response payloads
 // ---------------------------------------------------------------------------

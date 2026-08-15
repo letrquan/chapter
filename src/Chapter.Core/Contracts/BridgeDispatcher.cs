@@ -39,6 +39,13 @@ public sealed class BridgeDispatcher
     /// </summary>
     public Func<Task<string?>>? FolderPicker { get; set; }
 
+    /// <summary>
+    /// Notifies the host that the theme changed, so it can repaint the native window
+    /// caption to match. Supplied by the window for the same reason as the picker: only
+    /// it has the handle, and the dispatcher deliberately knows nothing about windows.
+    /// </summary>
+    public Action<string>? ThemeChanged { get; set; }
+
     /// <summary>Raised when the backend wants to push an event to the front-end.</summary>
     public event Action<BridgeEvent>? EventRaised;
 
@@ -234,6 +241,8 @@ public sealed class BridgeDispatcher
 
         "getSettings" => Settings,
 
+        "setTheme" => SetTheme(request.ParamsAs<SetThemeRequest>()),
+
         "pickFolder" => FolderPicker is null ? null : await FolderPicker().ConfigureAwait(false),
 
         "listEditors" => _editors.Detect(),
@@ -277,6 +286,24 @@ public sealed class BridgeDispatcher
 
     private bool OpenInEditor(OpenInEditorRequest req) =>
         _editors.Open(req.WorktreePath, req.Path, req.Line, req.Column, req.Editor);
+
+    /// <summary>
+    /// Records the theme and lets the host repaint its chrome.
+    ///
+    /// Unrecognised values fall back to "system" rather than being stored: the settings
+    /// file is hand-editable, and a typo here would otherwise persist a theme neither
+    /// side knows how to render.
+    /// </summary>
+    private bool SetTheme(SetThemeRequest req)
+    {
+        var theme = req.Theme is "dark" or "light" ? req.Theme : "system";
+
+        Settings.Theme = theme;
+        Settings.Save();
+        ThemeChanged?.Invoke(theme);
+
+        return true;
+    }
 
     private async Task<object> SaveFileAsync(SaveFileRequest req, CancellationToken ct)
     {
