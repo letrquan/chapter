@@ -110,6 +110,7 @@ const commonOptions: monaco.editor.IStandaloneEditorConstructionOptions = {
 
 let codeEditor: monaco.editor.IStandaloneCodeEditor | null = null
 let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null
+let editorHost: HTMLElement
 let codeHost: HTMLElement
 let diffHost: HTMLElement
 
@@ -199,6 +200,7 @@ export function disposeWorktreeModels(worktreePath: string): void {
 }
 
 export function initEditors(container: HTMLElement): void {
+  editorHost = container
   codeHost = document.createElement('div')
   diffHost = document.createElement('div')
   for (const host of [codeHost, diffHost]) {
@@ -220,13 +222,32 @@ export function initEditors(container: HTMLElement): void {
 
   // automaticLayout polls on a timer; a ResizeObserver reacts immediately and only when
   // the pane actually changes size, which matters when dragging the splitters.
-  const observer = new ResizeObserver(() => {
-    codeEditor?.layout()
-    diffEditor?.layout()
-  })
+  const observer = new ResizeObserver(() => layoutEditors())
   observer.observe(container)
 
   showMode('diff')
+}
+
+/**
+ * Lays out whichever editor is on screen, at the pane's measured size.
+ *
+ * The size has to be passed in rather than left for Monaco to measure. Left to itself the
+ * diff editor measures its *own* element — an element whose size Monaco also writes — so
+ * one layout taken while the pane is `display: none` records zero, stamps that on the
+ * element, and every later measurement reads back the value it just wrote. The diff
+ * collapses to a few pixels and stays collapsed: switching to Code and back left the pane
+ * blank for the rest of the session, with the file list and Code view both fine.
+ *
+ * The hidden editor is skipped for the same reason — measuring it is what poisons it. It
+ * gets a layout from showMode on the way back in, once it has a size to measure.
+ */
+function layoutEditors(): void {
+  const { width, height } = editorHost.getBoundingClientRect()
+  if (width === 0 || height === 0) return
+
+  const dimension = { width, height }
+  if (codeHost.style.display !== 'none') codeEditor?.layout(dimension)
+  if (diffHost.style.display !== 'none') diffEditor?.layout(dimension)
 }
 
 /** 'preview' hides both editors — the Markdown preview owns the pane instead. */
@@ -235,8 +256,7 @@ export function showMode(mode: 'diff' | 'code' | 'preview'): void {
   diffHost.style.display = mode === 'diff' ? 'block' : 'none'
 
   // A hidden Monaco instance skips layout, so it needs one on the way back in.
-  if (mode === 'code') codeEditor?.layout()
-  else if (mode === 'diff') diffEditor?.layout()
+  layoutEditors()
 }
 
 export function setTheme(theme: 'dark' | 'light'): void {
@@ -258,13 +278,13 @@ export function showDiff(input: DiffInput): void {
     original: getModel(input.worktreePath, input.path, 'base', input.baseText, input.language),
     modified: getModel(input.worktreePath, input.path, 'work', input.workingText, input.language),
   })
-  diffEditor.layout()
+  layoutEditors()
 }
 
 export function showCode(worktreePath: string, path: string, text: string, language: string): void {
   if (!codeEditor) return
   codeEditor.setModel(getModel(worktreePath, path, 'work', text, language))
-  codeEditor.layout()
+  layoutEditors()
 }
 
 /** Moves the caret to a line and scrolls it into view, centred. No-op in preview. */
