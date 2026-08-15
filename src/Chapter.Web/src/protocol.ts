@@ -324,8 +324,6 @@ export interface GenerationResult {
   /** Whether the model saw the whole change. Shown, not hidden. */
   diffTruncated: boolean
   note: string | null
-  /** The staged diff the message was written about; send it back with the commit. */
-  fingerprint: string | null
 }
 
 export interface ApiKeyPayload {

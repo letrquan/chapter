@@ -1826,6 +1826,154 @@ kbd {
   color: var(--text-faint);
 }
 
+/* --- writing the message --- */
+
+/* Above the box rather than beside the commit button, because it acts on the box. The
+   buttons stay auto-width so the row reads as a toolbar, not as two half-width actions. */
+.commit-write {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.commit-write .btn.small {
+  flex: none;
+}
+
+.write-go {
+  color: var(--accent);
+}
+
+.write-go:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
+}
+
+/* Tokens and cost. Deliberately quiet — it has to be readable when looked for and invisible
+   when not, since it appears after every generation. */
+.write-status {
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.commit-write.busy .write-status {
+  color: var(--accent);
+}
+
+/* The one moving part in the panel. A slow pulse rather than a spinner: text is already
+   appearing in the box below, and two things animating at once reads as a stall. */
+.commit-write.busy .write-status {
+  animation: write-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes write-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .commit-write.busy .write-status {
+    animation: none;
+  }
+}
+
+.commit-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.commit-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  box-shadow: inset 0 0 0 1px var(--border);
+  text-align: left;
+  transition: background var(--fast), box-shadow var(--fast);
+}
+
+.commit-choice:hover {
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
+}
+
+.choice-subject {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.choice-body {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The key prompt. Inline because there is no settings screen to send anybody to, and a
+   modal for pasting one value would be heavier than the act deserves. */
+.commit-key {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.key-row {
+  display: flex;
+  gap: 6px;
+}
+
+.key-row .btn.small {
+  flex: none;
+}
+
+.key-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.key-input:focus {
+  outline: none;
+  border-color: var(--accent-ring);
+}
+
+.key-note {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.key-note code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
 .commit-problems {
   display: flex;
   flex-direction: column;
@@ -1850,6 +1998,19 @@ kbd {
   font-size: 11px;
   line-height: 1.45;
   color: var(--rename);
+}
+
+/* The staged set moved out from under a generated message. Amber rather than red: nothing
+   is broken and nothing is blocked — it is a fact the user needs before they press commit. */
+.commit-note.moved {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--mod);
+}
+
+.commit-note.moved svg {
+  flex: none;
 }
 
 .commit-blocked {

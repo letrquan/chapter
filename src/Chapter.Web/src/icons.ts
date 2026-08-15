@@ -50,6 +50,16 @@ export const icons = {
   undo: svg('<path d="M3 7.5h7.25a3.25 3.25 0 1 1 0 6.5H6"/><path d="M5.75 4 2.5 7.5l3.25 3.5"/>'),
 
   check: svg('<path d="M3 8.5 6.5 12 13 4.5"/>', 13),
+
+  /** Generate: the four-pointed spark this interaction is named with everywhere else. */
+  spark: svg('<path d="M6.5 2 7.6 5.4 11 6.5 7.6 7.6 6.5 11 5.4 7.6 2 6.5 5.4 5.4Z"/>' +
+    '<path d="M11.75 9.5 12.3 11.2 14 11.75 12.3 12.3 11.75 14 11.2 12.3 9.5 11.75 11.2 11.2Z"/>', 13),
+
+  /** Stop: a square, because a spinner that is also the cancel button reads as neither. */
+  stop: svg('<rect x="4.5" y="4.5" width="7" height="7" rx="1"/>', 13),
+
+  /** Key: shown only where a credential is being asked for. */
+  key: svg('<circle cx="5" cy="11" r="2.5"/><path d="M6.8 9.2 12.5 3.5M10.5 5.5l1.5 1.5M12.5 3.5 14 5"/>', 13),
 }
 
 /**

@@ -54,13 +54,6 @@ public sealed record GenerationResult
 
     /// <summary>Anything true and worth saying that is not a failure.</summary>
     public string? Note { get; init; }
-
-    /// <summary>
-    /// The staged diff as it was when generation started. The commit box sends it back so a
-    /// message written about one set of changes is not silently committed against another —
-    /// the same guard hunk staging uses, for the same reason.
-    /// </summary>
-    public string? Fingerprint { get; init; }
 }
 
 /// <summary>
@@ -296,8 +289,6 @@ public sealed class CommitMessageGenerator
             parameters = BuildRequest(ai, system, digest, policy, count);
         }
 
-        var fingerprint = digest.IsEmpty ? null : await FingerprintAsync(worktreePath, baseRef, ct).ConfigureAwait(false);
-
         var outcome = count <= 1
             ? await StreamAsync(owned, id, worktreePath, parameters, ct).ConfigureAwait(false)
             : await OnceAsync(owned, parameters, ct).ConfigureAwait(false);
@@ -346,7 +337,6 @@ public sealed class CommitMessageGenerator
             Options = options,
             Cost = cost,
             DiffTruncated = digest.IsTruncated,
-            Fingerprint = fingerprint,
             Note = digest.IsTruncated
                 ? "The change was too large to send whole — some files were summarised rather than shown."
                 : null,
@@ -740,26 +730,6 @@ public sealed class CommitMessageGenerator
 
     /// <summary>Git's hash of the empty tree — the base of every root commit.</summary>
     private const string EmptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
-    /// <summary>
-    /// Identifies the staged content the message was written about.
-    ///
-    /// The same guard hunk staging uses. An agent staging something else between the
-    /// generation and the commit would otherwise leave a message describing work that is no
-    /// longer what is about to be committed, and nothing on screen would say so.
-    /// </summary>
-    private async Task<string?> FingerprintAsync(string worktreePath, string? baseRef, CancellationToken ct)
-    {
-        string[] args = baseRef is null
-            ? ["diff", "--cached", "--no-color", "--no-ext-diff"]
-            : ["diff", "--cached", "--no-color", "--no-ext-diff", baseRef];
-
-        var result = await _git.RunBytesAsync(worktreePath, ct, args).ConfigureAwait(false);
-        if (!result.Success) return null;
-
-        var hash = System.Security.Cryptography.SHA256.HashData(result.StandardOutput);
-        return Convert.ToHexString(hash, 0, 8);
-    }
 
     private void Report(GenerationProgress progress)
     {

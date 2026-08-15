@@ -28,6 +28,7 @@ import {
   resetCommitPanel,
   clearCommitSelection,
   forgetDraft,
+  writeMessage,
 } from './commit'
 import { isConfirmOpen } from './confirm'
 import { initHunkBar, showHunkBar, hideHunkBar, stepHunk, updateSelectionState } from './hunks'
@@ -1574,6 +1575,14 @@ function wireKeyboard(): void {
     if (ctrl && event.altKey && event.key.toLowerCase() === 'z') {
       event.preventDefault()
       void undoLast()
+      return
+    }
+
+    // Ctrl+G writes the commit message. Reaching for the mouse to fill in a text box rather
+    // defeats the point of a keyboard-first app, and pressing it again stops the generation.
+    if (ctrl && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'g') {
+      event.preventDefault()
+      writeMessage()
       return
     }
 

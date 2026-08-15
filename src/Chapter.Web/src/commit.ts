@@ -9,13 +9,16 @@
  * take are in the same place.
  */
 
-import { call } from './bridge'
+import { call, on } from './bridge'
 import { confirm } from './confirm'
 import { icons, kindLetter } from './icons'
 import type {
+  AiAvailability,
   ChangedFile,
   CommitViewPayload,
   DiffSide,
+  GeneratedMessage,
+  GenerationCost,
   MessageReviewPayload,
   MutationPayload,
 } from './protocol'
@@ -90,10 +93,80 @@ let selection: CommitSelection | null = null
 /** Guards against a slow read for a worktree the user has already left. */
 let generation = 0
 
+/* ==========================================================================
+   Generated messages
+   ========================================================================== */
+
+/** A generation in flight, or null. Only ever one at a time. */
+let writing: { id: string; worktreePath: string } | null = null
+
+/** Cached because the button is rendered on every repaint and the answer rarely changes. */
+let ai: AiAvailability | null = null
+
+/** What the last generation cost, and anything it wants to say about itself. */
+let lastCost: GenerationCost | null = null
+let lastNote: string | null = null
+
+/** Alternatives from a "give me options" run. Empty for an ordinary generation. */
+let choices: GeneratedMessage[] = []
+
+/** Whether the inline key prompt is open. */
+let askingForKey = false
+
+/**
+ * What was staged when the message was written, so the panel can notice it moving.
+ *
+ * The situation this app is built for: an agent stages something else while the generated
+ * message sits in the box unsent. Nothing about the message would otherwise reveal that it
+ * describes work which is no longer what is about to be committed.
+ */
+let writtenAgainst: string | null = null
+
+/** A cheap identity for the staged set — paths and their line counts, in order. */
+const stagedSignature = (state: CommitViewPayload): string =>
+  state.staged.map((f) => `${f.path}:${f.linesAdded}:${f.linesRemoved}`).join('\n')
+
 export function initCommitPanel(element: HTMLElement, dependencies: Deps): void {
   host = element
   deps = dependencies
   wire()
+
+  // The text comes back on the event channel rather than as the call's return value: a
+  // model call can outlast the bridge's 60s ceiling, so the call returns an id and the
+  // words follow.
+  on('messageDelta', (payload) => {
+    if (writing?.id !== payload.id || !view || view.worktreePath !== payload.worktreePath) return
+
+    // Through the draft, never straight into the DOM. This panel repaints on every watcher
+    // notification, and an agent writing in the worktree while a message is being generated
+    // is the ordinary case here — a direct write would be erased by the next repaint.
+    draftFor(payload.worktreePath).message = payload.message
+    paintMessage()
+  })
+
+  on('messageGenerated', (result) => {
+    if (writing?.id !== result.id) return
+    writing = null
+
+    if (!result.ok) {
+      // Never fatal. The message box is exactly as usable as it was before the button was
+      // pressed, which is the whole contract of this feature.
+      if (result.error) deps.toast('No message was written', result.error, 'error')
+      render()
+      return
+    }
+
+    const draft = draftFor(result.worktreePath)
+    draft.message = result.options[0]?.message ?? draft.message
+
+    choices = result.options.length > 1 ? result.options : []
+    lastCost = result.cost
+    lastNote = result.note
+    writtenAgainst = view && view.worktreePath === result.worktreePath ? stagedSignature(view) : null
+
+    render()
+    void reviewDraft()
+  })
 }
 
 export function commitSelection(): CommitSelection | null {
@@ -109,6 +182,16 @@ export function resetCommitPanel(): void {
   view = null
   review = null
   selection = null
+
+  // A generation belongs to the worktree it was started in. Leaving that worktree abandons
+  // it rather than letting it finish and drop a message into a box nobody is looking at.
+  stopWriting()
+
+  choices = []
+  lastCost = null
+  lastNote = null
+  writtenAgainst = null
+  askingForKey = false
 }
 
 export async function refreshCommitPanel(): Promise<void> {
@@ -129,6 +212,12 @@ export async function refreshCommitPanel(): Promise<void> {
     if (mine !== generation) return
     view = null
     deps.toast('Could not read the index', message(error), 'error')
+  }
+
+  // Asked once and remembered. The answer changes only when a key is stored, and that path
+  // updates it itself.
+  if (!ai) {
+    ai = await call('getAiStatus').catch(() => null)
   }
 
   render()
@@ -163,6 +252,12 @@ function render(): void {
   const caret = focused ? { start: previous.selectionStart, end: previous.selectionEnd } : null
   const scrolled = host.querySelector('.commit-scroll')?.scrollTop ?? 0
 
+  // The key box is never bound to a draft — nothing in this app holds a credential in
+  // module state — so a repaint mid-paste would drop it on the floor unless it is carried
+  // across by hand. Same watcher, same repaint, worse thing to lose.
+  const keyBox = host.querySelector<HTMLInputElement>('#api-key')
+  const key = keyBox === null ? null : { value: keyBox.value, focused: document.activeElement === keyBox }
+
   // The groups scroll; the box stays put. A commit button that scrolls off the bottom of a
   // long list of changes is a commit button nobody can find.
   host.innerHTML = `
@@ -174,6 +269,14 @@ function render(): void {
 
   const scroller = host.querySelector('.commit-scroll')
   if (scroller) scroller.scrollTop = scrolled
+
+  if (key !== null) {
+    const restored = host.querySelector<HTMLInputElement>('#api-key')
+    if (restored) {
+      restored.value = key.value
+      if (key.focused) restored.focus()
+    }
+  }
 
   const textarea = host.querySelector<HTMLTextAreaElement>('#commit-message')
   if (!textarea) return
@@ -317,11 +420,16 @@ function renderBox(state: CommitViewPayload, draft: CommitDraft): string {
         ${identityRow}
       </div>
 
+      ${renderWrite(state, draft)}
+
       <textarea id="commit-message" class="commit-message" rows="3"
                 spellcheck="true"
+                ${writing ? 'readonly' : ''}
                 placeholder="${
                   draft.amend ? 'Amend the message…' : 'Summary, then a blank line, then why.'
                 }">${esc(draft.message)}</textarea>
+
+      ${renderChoices()}
 
       ${problems ? `<ul class="commit-problems">${problems}</ul>` : ''}
 
@@ -354,6 +462,153 @@ function renderBox(state: CommitViewPayload, draft: CommitDraft): string {
         }</span>
       </button>
     </section>`
+}
+
+/**
+ * The row above the message box: write one, stop writing one, or say why neither is on offer.
+ *
+ * Above the box rather than beside the commit button, because it acts on the box. Nothing
+ * here is ever the only way to get a message — the textarea is the feature and this is a
+ * shortcut to filling it, so every state below still leaves it typeable.
+ */
+function renderWrite(state: CommitViewPayload, draft: CommitDraft): string {
+  if (askingForKey) return renderKeyPrompt()
+
+  // Off in settings.json, or a build with no credential story at all. Say nothing and take
+  // up no space: an error banner above every commit box would be its own kind of error spam.
+  if (!ai || (!ai.available && !ai.needsKey)) return ''
+
+  if (writing) {
+    return `
+      <div class="commit-write busy">
+        <button class="btn small" data-action="stop-writing" title="Stop generating">
+          ${icons.stop}<span>Stop</span>
+        </button>
+        <span class="write-status">Writing a message…</span>
+      </div>`
+  }
+
+  const needsKey = ai.needsKey
+
+  // An amend can be described even with nothing staged — that is the reword case. A plain
+  // commit cannot: there is no diff to write about.
+  const hasSomethingToDescribe = draft.amend ? !state.isUnborn : state.staged.length > 0
+
+  const disabled = !needsKey && !hasSomethingToDescribe
+  const title = needsKey
+    ? 'Add a Claude API key to write commit messages here'
+    : disabled
+      ? 'Stage something first — there is nothing to describe'
+      : `Write a message with ${ai.model} (Ctrl+G)`
+
+  const again = draft.message.trim().length > 0
+
+  return `
+    <div class="commit-write">
+      <button class="btn small write-go" data-action="write" ${disabled ? 'disabled' : ''}
+              title="${esc(title)}">
+        ${needsKey ? icons.key : icons.spark}<span>${
+          needsKey ? 'Add a key' : again ? 'Rewrite' : 'Write it for me'
+        }</span>
+      </button>
+
+      ${
+        needsKey || disabled
+          ? ''
+          : `<button class="btn small" data-action="write-options"
+                     title="Ask for three different framings">
+               <span>3 options</span>
+             </button>`
+      }
+
+      <span class="write-status">${renderCost()}</span>
+    </div>
+    ${lastNote ? `<div class="commit-note">${esc(lastNote)}</div>` : ''}
+    ${renderMoved()}`
+}
+
+/**
+ * What the last generation cost.
+ *
+ * Shown rather than buried, because without it nobody can tell whether this feature is
+ * cheap or quietly expensive — and the answer differs by two orders of magnitude between
+ * models. Cached input is called out separately: it is why regenerating costs almost
+ * nothing, and that is invisible if the tokens are simply summed.
+ */
+function renderCost(): string {
+  if (!lastCost) return ''
+
+  const tokens = `${lastCost.inputTokens.toLocaleString()} in · ${lastCost.outputTokens.toLocaleString()} out`
+  const cached = lastCost.cacheReadTokens > 0 ? ` · ${lastCost.cacheReadTokens.toLocaleString()} cached` : ''
+
+  // Null for a model that is not in the price table. Tokens are still true; an invented
+  // price would not be.
+  const money =
+    lastCost.usd === null
+      ? ''
+      : lastCost.usd < 0.01
+        ? ` · &lt;$0.01`
+        : ` · $${lastCost.usd.toFixed(2)}`
+
+  return `<span title="${esc(tokens + cached)}">${tokens}${cached}${money}</span>`
+}
+
+/** Says when the staged set has moved out from under a generated message. */
+function renderMoved(): string {
+  if (!view || writtenAgainst === null) return ''
+  if (writtenAgainst === stagedSignature(view)) return ''
+
+  return `<div class="commit-note moved">${
+    icons.warning
+  }<span>What is staged has changed since this message was written.</span></div>`
+}
+
+/** The alternatives from a "3 options" run, until one is picked. */
+function renderChoices(): string {
+  if (choices.length === 0 || writing) return ''
+
+  const rows = choices
+    .map((choice, index) => {
+      const summary = choice.message.split('\n')[0] ?? ''
+      const rest = choice.body.trim().split('\n')[0] ?? ''
+
+      return `
+        <button class="commit-choice" data-choice="${index}" title="Use this message">
+          <span class="choice-subject">${esc(summary)}</span>
+          ${rest ? `<span class="choice-body">${esc(rest)}</span>` : ''}
+        </button>`
+    })
+    .join('')
+
+  return `<div class="commit-choices">${rows}</div>`
+}
+
+/**
+ * Asks for the key, inline.
+ *
+ * Inline rather than in a settings screen because there is no settings screen, and inline
+ * rather than a modal because pasting a key does not warrant one. The sentence underneath is
+ * the important part: people are right to be wary of typing a credential into a window, and
+ * the honest answer to "where does this go" is short enough to just say.
+ */
+function renderKeyPrompt(): string {
+  const stored = ai?.source === 'stored'
+
+  return `
+    <div class="commit-key">
+      <div class="key-row">
+        <input type="password" id="api-key" class="key-input" spellcheck="false"
+               autocomplete="off" placeholder="sk-ant-…" />
+        <button class="btn small pop" data-action="save-key">Save</button>
+        <button class="btn small" data-action="cancel-key">Cancel</button>
+      </div>
+      <div class="key-note">
+        Encrypted for your Windows account in <code>credentials.dat</code>, never written to
+        <code>settings.json</code>.${
+          stored ? ' Saving an empty box forgets the key already stored.' : ''
+        }
+      </div>
+    </div>`
 }
 
 /** Grows the message box with its content, up to a point, rather than scrolling at 3 rows. */
@@ -396,6 +651,18 @@ function wire(): void {
       return
     }
 
+    const choice = target.closest<HTMLElement>('[data-choice]')
+    if (choice && view) {
+      const picked = choices[Number(choice.dataset.choice)]
+      if (picked) {
+        draftFor(view.worktreePath).message = picked.message
+        choices = []
+        render()
+        void reviewDraft()
+      }
+      return
+    }
+
     const action = target.closest<HTMLElement>('[data-action]')
     if (!action || !view) return
 
@@ -409,6 +676,29 @@ function wire(): void {
       case 'commit':
         void submit()
         break
+      case 'write':
+        if (ai?.needsKey) {
+          askingForKey = true
+          render()
+          host.querySelector<HTMLInputElement>('#api-key')?.focus()
+        } else {
+          void write(1)
+        }
+        break
+      case 'write-options':
+        void write(3)
+        break
+      case 'stop-writing':
+        stopWriting()
+        render()
+        break
+      case 'save-key':
+        void saveKey()
+        break
+      case 'cancel-key':
+        askingForKey = false
+        render()
+        break
     }
   })
 
@@ -416,10 +706,33 @@ function wire(): void {
     const target = event.target as HTMLElement
     if (target.id !== 'commit-message' || !view) return
 
+    // Typing wins. A user who starts writing while the model is still going has answered
+    // the question themselves, and racing them for the same box would be indefensible.
+    if (writing) stopWriting()
+
     const textarea = target as HTMLTextAreaElement
     draftFor(view.worktreePath).message = textarea.value
     autosize(textarea)
     scheduleReview()
+
+    // The alternatives described a message that has now been edited away from.
+    choices = []
+  })
+
+  // Enter saves the key from inside its own box, and Escape closes the prompt without
+  // touching what is already stored.
+  host.addEventListener('keydown', (event) => {
+    const target = event.target as HTMLElement
+    if (target.id !== 'api-key') return
+
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      void saveKey()
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      askingForKey = false
+      render()
+    }
   })
 
   host.addEventListener('change', (event) => {
@@ -477,6 +790,127 @@ function applyAmendMessage(draft: CommitDraft): void {
   }
 }
 
+/* ==========================================================================
+   Writing a message
+   ========================================================================== */
+
+/**
+ * Asks for a message and lets it stream into the box.
+ *
+ * Exported so the keyboard can reach it: the roadmap's cross-cutting rule is that every new
+ * action gets a binding, and reaching for the mouse to fill in a commit message rather
+ * defeats the point of a keyboard-first app.
+ */
+export function writeMessage(): void {
+  if (!view || !ai) return
+
+  if (ai.needsKey) {
+    askingForKey = true
+    render()
+    host.querySelector<HTMLInputElement>('#api-key')?.focus()
+    return
+  }
+
+  // The same key stops it. Pressing it twice should not queue a second generation.
+  if (writing) {
+    stopWriting()
+    render()
+    return
+  }
+
+  void write(1)
+}
+
+async function write(count: number): Promise<void> {
+  if (!view || writing) return
+
+  const worktreePath = view.worktreePath
+  const draft = draftFor(worktreePath)
+
+  choices = []
+  lastCost = null
+  lastNote = null
+  writtenAgainst = null
+
+  try {
+    const started = await call('generateCommitMessage', {
+      worktreePath,
+      amend: draft.amend,
+      count,
+    })
+
+    // The user can have moved on during the round trip; the generation is then already
+    // pointless and the backend is told so rather than left running.
+    if (!view || view.worktreePath !== worktreePath) {
+      void call('cancelGeneration', { id: started.id }).catch(() => {})
+      return
+    }
+
+    writing = { id: started.id, worktreePath }
+
+    // Cleared only now, so a refused start leaves whatever was typed alone.
+    if (count === 1) draft.message = ''
+
+    render()
+  } catch (error) {
+    deps.toast('Could not start writing', message(error), 'error')
+
+    // The status is the likeliest thing to have gone stale — a key removed, the feature
+    // switched off in settings.json since the panel last asked.
+    ai = await call('getAiStatus').catch(() => ai)
+    render()
+  }
+}
+
+/** Abandons the generation in flight, if any. Safe to call when there is none. */
+function stopWriting(): void {
+  if (!writing) return
+
+  const { id } = writing
+  writing = null
+
+  // Failure here is not worth reporting: the front-end has already stopped listening for
+  // this id, so the worst case is a request that finishes and is ignored.
+  void call('cancelGeneration', { id }).catch(() => {})
+}
+
+/**
+ * Stores the key and re-asks what that changed.
+ *
+ * The value is read straight out of the input and sent; it is never put in the draft, a
+ * toast, or the operation log. An empty box forgets the stored key rather than storing an
+ * empty one, which is how "sign out" works without a second button.
+ */
+async function saveKey(): Promise<void> {
+  const input = host.querySelector<HTMLInputElement>('#api-key')
+  if (!input) return
+
+  const key = input.value
+  input.value = ''
+
+  try {
+    const result = await call('setApiKey', { key })
+    ai = result.status
+
+    if (!result.ok) {
+      deps.toast('The key was not saved', result.error ?? undefined, 'error')
+      return
+    }
+
+    askingForKey = false
+    render()
+
+    deps.toast(
+      key.trim().length === 0 ? 'Key forgotten' : 'Key saved',
+      key.trim().length === 0
+        ? 'Chapter will fall back to ANTHROPIC_API_KEY if it is set.'
+        : 'Encrypted for your Windows account.',
+    )
+  } catch (error) {
+    deps.toast('The key was not saved', message(error), 'error')
+  }
+}
+
 let reviewTimer: number | undefined
 
 /** The review shells out to `git log`, so it waits for a pause rather than firing per key. */
@@ -501,6 +935,25 @@ async function reviewDraft(): Promise<void> {
   } catch {
     // Message advice is a nicety; failing to fetch it must not disturb the panel.
   }
+}
+
+/**
+ * Repaints only the message box.
+ *
+ * A full render per delta would rebuild the whole panel several times a second and throw
+ * away the scroll position of the file list above it. This is the same targeted-update
+ * reasoning as `paintProblems`, for the same reason.
+ */
+function paintMessage(): void {
+  const textarea = host.querySelector<HTMLTextAreaElement>('#commit-message')
+  if (!textarea || !view) return
+
+  textarea.value = draftFor(view.worktreePath).message
+  autosize(textarea)
+
+  // Keeps the tail of a long message in view as it is written, which is where the words are
+  // appearing.
+  textarea.scrollTop = textarea.scrollHeight
 }
 
 /**
@@ -638,6 +1091,11 @@ async function submit(): Promise<void> {
   draft.amend = false
   draft.amendSeeded = false
   draft.savedMessage = null
+
+  // The generation's leftovers describe the commit that has just been made.
+  choices = []
+  lastNote = null
+  writtenAgainst = null
 }
 
 /**
