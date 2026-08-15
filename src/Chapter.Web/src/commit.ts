@@ -97,8 +97,14 @@ let generation = 0
    Generated messages
    ========================================================================== */
 
-/** A generation in flight, or null. Only ever one at a time. */
-let writing: { id: string; worktreePath: string } | null = null
+/**
+ * A generation in flight, or null. Only ever one at a time.
+ *
+ * `replaced` is whatever was in the box when it started, kept so a refusal or a dead network
+ * gives it back. Clearing the box to make room for a message that never arrives is the same
+ * small betrayal as losing a half-written message to the amend checkbox.
+ */
+let writing: { id: string; worktreePath: string; replaced: string } | null = null
 
 /** Cached because the button is rendered on every repaint and the answer rarely changes. */
 let ai: AiAvailability | null = null
@@ -146,11 +152,20 @@ export function initCommitPanel(element: HTMLElement, dependencies: Deps): void 
 
   on('messageGenerated', (result) => {
     if (writing?.id !== result.id) return
+
+    const { replaced } = writing
     writing = null
 
     if (!result.ok) {
-      // Never fatal. The message box is exactly as usable as it was before the button was
-      // pressed, which is the whole contract of this feature.
+      // Never fatal, and never lossy. "Exactly as usable as it was before the button was
+      // pressed" has to include what was in the box, so the message the generation cleared
+      // to make room for itself goes back.
+      //
+      // Unconditional here on purpose: every user-initiated stop — typing, the Stop button,
+      // leaving the worktree — nulls `writing` first, so those results never reach this
+      // branch. What does reach it is a refusal or a failure, with the box untouched.
+      draftFor(result.worktreePath).message = replaced
+
       if (result.error) deps.toast('No message was written', result.error, 'error')
       render()
       return
@@ -422,9 +437,11 @@ function renderBox(state: CommitViewPayload, draft: CommitDraft): string {
 
       ${renderWrite(state, draft)}
 
+      <!-- Never readonly, not even mid-generation. A readonly textarea fires no input
+           event, which would make "typing cancels the generation" quietly untrue: the
+           user would be locked out of the box until the model finished. -->
       <textarea id="commit-message" class="commit-message" rows="3"
                 spellcheck="true"
-                ${writing ? 'readonly' : ''}
                 placeholder="${
                   draft.amend ? 'Amend the message…' : 'Summary, then a blank line, then why.'
                 }">${esc(draft.message)}</textarea>
@@ -846,9 +863,10 @@ async function write(count: number): Promise<void> {
       return
     }
 
-    writing = { id: started.id, worktreePath }
+    writing = { id: started.id, worktreePath, replaced: draft.message }
 
-    // Cleared only now, so a refused start leaves whatever was typed alone.
+    // Cleared only now, so a refused start leaves whatever was typed alone — and kept above,
+    // so a refused *generation* gives it back.
     if (count === 1) draft.message = ''
 
     render()
