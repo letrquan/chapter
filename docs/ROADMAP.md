@@ -168,13 +168,34 @@ Backend is C#, so this lives in `Chapter.Core` using the official SDK
 **Complete.** The first thing the app does that leaves the machine, which shaped every
 decision below more than the feature itself did.
 
+**Since landed: not Anthropic-only.** The phase was written assuming one vendor, and that was
+never a design decision — just the shape of the first implementation. There is now a seam
+(`Ai/Providers/`) with two things behind it: the Claude API through its SDK, and the
+OpenAI-compatible `chat/completions` dialect that Azure, Ollama, LM Studio, vLLM, OpenRouter
+and the rest speak. Everything below is unchanged for both, except where noted:
+
+- Token counting is real on Anthropic and estimated on the dialect, which has no counting
+  endpoint. Borrowing another family's tokeniser would be worse than an honest over-estimate.
+- Prompt caching is Anthropic's explicit breakpoint. The seam still carries the boundary
+  between the stable prompt and the diff, which is the only thing a provider with automatic
+  prefix caching can use anyway.
+- Thinking is suppressed on Anthropic and cannot be on the dialect, so the token ceiling is
+  raised there instead. An unused allowance costs nothing; a truncated reply costs the feature.
+- The dialect has no single answer for `max_completion_tokens` vs `max_tokens`, or for
+  whether `response_format` is understood at all — so the request steps down when the endpoint
+  says so, at most twice, and each concession reaches the operation log.
+- A `baseUrl` means no key is needed. Ollama and LM Studio have no authentication, and they
+  are most of the reason anybody asks for this.
+
 - [x] **[BLOCKER]** Credential handling. The SDK reads `ANTHROPIC_API_KEY`, or an
       `ant auth login` profile under `~/.config/anthropic/`. For a desktop app, decide:
       reuse an existing profile, or store a key via Windows DPAPI. **Do not** put it in
       `settings.json` — that file is plaintext in `%LOCALAPPDATA%`.
       → All three, in that order: a key typed into Chapter wins, then the environment
-      variable, then a login profile. `ApiKeyStore` encrypts its own key with DPAPI into
-      `credentials.dat`, so it is tied to the Windows account rather than to the disk.
+      variable, then a login profile. `ApiKeyStore` encrypts into `credentials.dat`, so keys
+      are tied to the Windows account rather than to the disk — one entry per provider, since
+      a Claude key and an OpenAI key are two different secrets and switching between them
+      should not mean retyping either.
       The order only matters when two exist at once, and the UI names the one it used —
       an inherited environment variable belonging to a different account is exactly the
       kind of thing that should be visible rather than inferred. The key is asked for
@@ -382,9 +403,10 @@ Nothing else on this list is unique to this app. These are.
 1. ~~**Phase 0**~~ — done. Unavoidable, and the riskiest thing to skip.
 2. ~~**Phase 1**~~ — done. Staging, committing. The smallest slice that makes the app a git
    client rather than a viewer.
-3. ~~**Phase 2**~~ — done. AI commit messages. The open decision it started with — where
-   the API key lives — is answered in `ApiKeyStore`, and the streaming it needed is the
-   long-running-operation protocol the rest of the roadmap was going to need anyway.
+3. ~~**Phase 2**~~ — done. AI commit messages, through Claude or anything speaking the
+   OpenAI-compatible dialect. The open decision it started with — where the API key lives —
+   is answered in `ApiKeyStore`, and the streaming it needed is the long-running-operation
+   protocol the rest of the roadmap was going to need anyway.
 4. **Phase 3** — **Next**: branches and stash, needed before checkout is safe.
 5. **Phase 7** — worktree management. Cheap, and this app should obviously own it.
 6. **Phase 5** — push/pull. Blocked on credentials, so start that spike early.

@@ -26,7 +26,7 @@ It is a review cockpit, not an IDE.
 | Node.js | 20+ (build only — the app does not run Node) |
 | WebView2 runtime | Ships with Windows 11; otherwise install the Evergreen runtime |
 | git | On `PATH` |
-| Claude API key | Optional — only for generated commit messages. Everything else works without one. |
+| A model | Optional — only for generated commit messages. A Claude key, an OpenAI-compatible key, or a local endpoint such as Ollama, which needs no key at all. |
 
 ## Build
 
@@ -77,7 +77,8 @@ src/Chapter.Core/     Everything that is not UI. Fully testable without a window
   Git/                git.exe plumbing: worktrees, status, diffs, base resolution
   Indexing/           Roslyn syntactic index, file watcher, fuzzy search
   Editors/            Rider / VS Code detection and launching
-  Ai/                 Commit messages: the key, the diff budget, the call
+  Ai/                 Commit messages: the keys, the diff budget, the prompt
+    Providers/        The seam, and the two dialects behind it
   Contracts/          The front-end protocol, and the dispatcher that serves it
 
 src/Chapter.App/      Thin WPF shell. Hosts WebView2 and pumps messages. Little else.
@@ -180,10 +181,37 @@ open file whenever the watcher fires, which was correct while nothing was editab
 destructive the moment something was; a model with unsaved edits is now left alone and you
 are told the file changed underneath you.
 
-**Claude writes the message, and says what that cost.** The commit box has a button above it
-that fills the message from what is staged. It is a shortcut to filling a textarea, never a
-replacement for one: with no key it offers to take one, with no network it says so once, and
-if it refuses or returns nonsense the box is exactly as typeable as it was before.
+**A model writes the message, and the app says what that cost.** The commit box has a button
+above it that fills the message from what is staged. It is a shortcut to filling a textarea,
+never a replacement for one: with no key it offers to take one, with no network it says so
+once, and if it refuses or returns nonsense the box is exactly as typeable as it was before.
+
+**Two providers, one seam.** `anthropic` talks to the Claude API through its own SDK;
+`openai` talks the `chat/completions` dialect, which means OpenAI-*compatible* rather than
+OpenAI — Azure, Ollama, LM Studio, vLLM, llama.cpp, OpenRouter, Together, Groq and the rest.
+The second is written against the wire by hand rather than through a vendor SDK, because the
+target is the dialect and an SDK tracks one implementation of it.
+
+The dialect is not one thing, though, and two fields have no universally safe answer:
+`max_completion_tokens` is required by OpenAI's reasoning models and unknown to older
+servers, and `response_format: json_schema` is rejected outright by plenty. So the request
+goes out fully featured and steps down when told to — a rejection naming a field drops that
+field and retries, at most twice, with every concession recorded in the operation log. That
+is cheaper than a table of every server anybody might run, and it self-heals when one of them
+changes.
+
+Two consequences worth knowing. A `baseUrl` means no key is required, because Ollama and LM
+Studio have no authentication and demanding one would lock out the people most likely to want
+this; no `Authorization` header is sent at all rather than an empty one. And reasoning on
+these endpoints cannot be switched off the way Anthropic's thinking can while still being
+charged against the same ceiling as the reply, so the ceiling is raised there — an unused
+allowance costs nothing, a reply cut in half costs the feature.
+
+Only the Anthropic path can count tokens before sending; the dialect has no such endpoint, so
+the budget falls back to a local estimate rather than borrowing a tokeniser from another model
+family, whose counts would simply be wrong. Prices are listed for Claude models only, so an
+OpenAI-compatible generation reports tokens and no dollars — the same rule as any unrecognised
+model, and for the same reason.
 
 The interesting problem is not the call, it is what to send. A single staged file can be
 fourteen thousand lines, and "send the diff" then spends the context window and the bill on a
@@ -211,12 +239,13 @@ A model missing from the price table shows tokens and no dollars rather than a m
 figure.
 
 **The key is never in `settings.json`.** That file is plaintext in `%LOCALAPPDATA%`, it is
-documented as hand-editable, and this README already tells you to open it — so the key lives
-in `credentials.dat` beside it, encrypted with DPAPI under your Windows account. Chapter looks
-for a key you typed into it first, then `ANTHROPIC_API_KEY`, then an `ant auth login` profile,
-and the commit box names which one it is using. That last part matters: Chapter is often
-launched by an agent harness, and an inherited environment variable belonging to a different
-account should be visible rather than inferred.
+documented as hand-editable, and this README already tells you to open it — so keys live in
+`credentials.dat` beside it, encrypted with DPAPI under your Windows account, one entry per
+provider. Chapter looks for a key you typed into it first, then the provider's environment
+variable (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`), then — for Anthropic only — an
+`ant auth login` profile. The commit box names which one it is using. That last part matters:
+Chapter is often launched by an agent harness, and an inherited environment variable belonging
+to a different account should be visible rather than inferred.
 
 **Adding another language** means implementing `ILanguageIndexer` and registering Monaco
 providers for it. Nothing above that seam is C#-specific.
@@ -278,6 +307,8 @@ else is a setting, and every default is deliberate:
 // %LOCALAPPDATA%\Chapter\settings.json
 "ai": {
   "enabled": true,
+  "provider": "anthropic",      // or "openai" for anything speaking chat/completions
+  "baseUrl": "",                // openai only; empty is api.openai.com
   "model": "claude-opus-5",     // a string, because the model list moves faster than this app
   "effort": "low",              // right for a short scoped task, not merely cheap
   "maxTokens": 1024,            // a commit message is short by definition
@@ -289,6 +320,26 @@ else is a setting, and every default is deliberate:
 `enabled: false` removes the button entirely rather than showing a disabled one, and stops
 the app reading a credential at all. Set `model` to `claude-haiku-4-5` if you would rather
 spend a tenth as much; Chapter will not pick cheap on your behalf.
+
+`model` has to match `provider` — switching to `openai` and leaving a Claude model here gets
+a "model not found" from the endpoint. Chapter does not validate the pairing, because the
+compatible providers serve every model between them and OpenRouter genuinely serves
+`anthropic/claude-*` through the OpenAI dialect, so any rule about which names are legal
+would be wrong for somebody.
+
+Ollama, entirely local and needing no key at all:
+
+```jsonc
+"ai": {
+  "provider": "openai",
+  "baseUrl": "http://localhost:11434",
+  "model": "qwen2.5-coder"
+}
+```
+
+`effort` is only sent to the Anthropic provider. The dialect's own reasoning controls are not
+portable across the servers that implement it, and sending a field one of them rejects would
+fail the whole request.
 
 ## Not in this version
 
