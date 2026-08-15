@@ -424,8 +424,9 @@ public static class DiffDigestBuilder
         var patches = new Dictionary<string, FilePatch>(StringComparer.Ordinal);
 
         // Bounded rather than all at once: forty concurrent git processes on a cold repo is
-        // its own kind of stall, and this runs while the user is watching a button.
-        const int batchSize = 8;
+        // its own kind of stall, and this runs while the user is watching a button — very
+        // possibly on a machine where an agent is already running a build.
+        const int batchSize = 4;
 
         for (var start = 0; start < candidates.Length; start += batchSize)
         {

@@ -77,13 +77,22 @@ public sealed class ApiKeyStore
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("Chapter.ApiKey.v1");
 
     private readonly string _filePath;
+    private readonly Func<string, string?> _environment;
 
     /// <param name="filePath">
     /// Where the encrypted key lives. Overridable so tests can point at a temp directory
     /// rather than writing into the user's profile.
     /// </param>
-    public ApiKeyStore(string? filePath = null) =>
+    /// <param name="environment">
+    /// How to read an environment variable. Overridable for the same reason: the fallback
+    /// order is worth testing, and a test that reads the real environment passes or fails
+    /// depending on whether whoever ran it happens to have a key exported.
+    /// </param>
+    public ApiKeyStore(string? filePath = null, Func<string, string?>? environment = null)
+    {
         _filePath = filePath ?? DefaultFilePath;
+        _environment = environment ?? Environment.GetEnvironmentVariable;
+    }
 
     public static string DefaultFilePath =>
         Path.Combine(AppSettings.DirectoryPath, "credentials.dat");
@@ -99,7 +108,7 @@ public sealed class ApiKeyStore
         var stored = ReadStored();
         if (stored is not null) return stored;
 
-        var environment = Environment.GetEnvironmentVariable(EnvironmentVariable);
+        var environment = _environment(EnvironmentVariable);
         return string.IsNullOrWhiteSpace(environment) ? null : environment.Trim();
     }
 
@@ -118,7 +127,7 @@ public sealed class ApiKeyStore
         var stored = ReadStored();
         if (stored is not null) return new ApiKeyState(ApiKeySource.Stored, Hint(stored));
 
-        var environment = Environment.GetEnvironmentVariable(EnvironmentVariable);
+        var environment = _environment(EnvironmentVariable);
         if (!string.IsNullOrWhiteSpace(environment))
             return new ApiKeyState(ApiKeySource.Environment, Hint(environment.Trim()));
 

@@ -119,6 +119,20 @@ public sealed class CommitMessageGenerator
     {
         var ai = _settings.Ai;
 
+        // Answered before anything is read. A feature that is switched off has no business
+        // opening credential files or exchanging a token to find out how switched off it is.
+        if (!ai.Enabled)
+        {
+            return new AiAvailability
+            {
+                Available = false,
+                Reason = "Message generation is switched off in settings.json.",
+                Source = "none",
+                Model = ai.Model,
+                Effort = ai.Effort,
+            };
+        }
+
         // Cheap sources first. Resolving a login profile is the expensive one and is only
         // worth doing when neither of the others answered.
         var state = _keys.Read();
@@ -133,19 +147,6 @@ public sealed class CommitMessageGenerator
             ApiKeySource.Profile => "profile",
             _ => "none",
         };
-
-        if (!ai.Enabled)
-        {
-            return new AiAvailability
-            {
-                Available = false,
-                Reason = "Message generation is switched off in settings.json.",
-                Source = source,
-                Hint = state.Hint,
-                Model = ai.Model,
-                Effort = ai.Effort,
-            };
-        }
 
         return new AiAvailability
         {
