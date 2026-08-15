@@ -371,8 +371,14 @@ public static class PatchBuilder
     /// Read as bytes and decoded as Latin-1 rather than through the usual UTF-8 path, so a
     /// file that is not UTF-8 survives the round trip.
     /// </summary>
+    /// <param name="baseRef">
+    /// What the index is compared against, for the staged side only. Null means HEAD, which
+    /// is every staging operation. Phase 2 passes <c>HEAD~1</c> to read what an amended
+    /// commit would contain.
+    /// </param>
     public static async Task<FilePatch> ReadAsync(
-        GitCli git, string worktreePath, string path, DiffSide side, CancellationToken ct = default)
+        GitCli git, string worktreePath, string path, DiffSide side,
+        string? baseRef = null, CancellationToken ct = default)
     {
         // The prefixes are pinned rather than left to the user's config, and this is not
         // cosmetic. `git apply` strips one leading path component by default, so it needs
@@ -386,8 +392,13 @@ public static class PatchBuilder
             "--", StagingService.Literal(path),
         ];
 
+        // The base ref goes before the `--`, where git expects a revision; passing it on the
+        // unstaged side would compare the working tree against a commit, which is a different
+        // question from the one every caller here is asking.
         string[] args = side is DiffSide.Staged
-            ? ["diff", "--cached", .. common]
+            ? baseRef is null
+                ? ["diff", "--cached", .. common]
+                : ["diff", "--cached", baseRef, .. common]
             : ["diff", .. common];
 
         var result = await git.RunBytesAsync(worktreePath, ct, args).ConfigureAwait(false);

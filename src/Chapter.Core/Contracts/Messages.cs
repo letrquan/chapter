@@ -277,6 +277,56 @@ public sealed record MessageReviewRequest
     public string Message { get; init; } = "";
 }
 
+/// <summary>Asks Claude for a commit message describing what is staged.</summary>
+public sealed record GenerateMessageRequest
+{
+    public string WorktreePath { get; init; } = "";
+
+    /// <summary>Describe the commit an amend would produce, not just what has been staged since.</summary>
+    public bool Amend { get; init; }
+
+    /// <summary>
+    /// How many alternatives to ask for. One streams; more than one arrives in a single reply,
+    /// because three messages appearing a character at a time in three boxes is not a thing
+    /// anybody wants to watch.
+    /// </summary>
+    public int Count { get; init; } = 1;
+}
+
+public sealed record CancelGenerationRequest
+{
+    /// <summary>The id <c>generateCommitMessage</c> returned.</summary>
+    public string Id { get; init; } = "";
+}
+
+/// <summary>
+/// Stores or clears the Claude API key.
+///
+/// The one message in this protocol carrying a secret. It goes straight into DPAPI-encrypted
+/// storage and is never echoed back, never logged, and never written to
+/// <c>settings.json</c> — <see cref="Ai.ApiKeyStore"/> has the reasoning.
+/// </summary>
+public sealed record ApiKeyRequest
+{
+    /// <summary>Empty forgets the stored key rather than storing an empty one.</summary>
+    public string Key { get; init; } = "";
+}
+
+/// <summary>The outcome of storing a key — never the key itself.</summary>
+public sealed record ApiKeyPayload
+{
+    public required bool Ok { get; init; }
+    public string? Error { get; init; }
+    public required Ai.AiAvailability Status { get; init; }
+}
+
+/// <summary>An accepted generation. The text arrives as events against this id.</summary>
+public sealed record GenerationStartedPayload
+{
+    public required string Id { get; init; }
+    public required string WorktreePath { get; init; }
+}
+
 public sealed record SetThemeRequest
 {
     /// <summary>"dark", "light" or "system".</summary>

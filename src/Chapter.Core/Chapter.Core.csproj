@@ -10,6 +10,15 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.6.0" />
+
+    <!-- The official Claude SDK. Phase 2 keeps message generation in C# rather than adding a
+         Node process for it: the backend is already here, and the whole design of this app is
+         that there is one runtime, not two. -->
+    <PackageReference Include="Anthropic" Version="12.40.0" />
+
+    <!-- DPAPI, for the API key. Not in the framework since .NET Core, and the alternative is
+         either plaintext or hand-rolled crypto. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
   </ItemGroup>
 
   <ItemGroup>

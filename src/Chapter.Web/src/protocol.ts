@@ -265,6 +265,75 @@ export interface PatchLineSelection {
   line: number
 }
 
+/* --------------------------------------------------------------------------
+   Generated commit messages
+   -------------------------------------------------------------------------- */
+
+/** Where the credential in use came from. `none` means generation is unavailable. */
+export type ApiKeySource = 'none' | 'stored' | 'environment' | 'profile'
+
+export interface AiAvailability {
+  available: boolean
+  /** Why not, in one sentence. Null when it is. */
+  reason: string | null
+  /** The one reason the user can fix from inside the app, so it gets its own affordance. */
+  needsKey: boolean
+  source: ApiKeySource
+  /** The last few characters of the key, for telling two accounts apart. Never the key. */
+  hint: string | null
+  model: string
+  effort: string
+}
+
+/** One message the model wrote, in parts rather than as prose. */
+export interface GeneratedMessage {
+  type: string | null
+  scope: string | null
+  subject: string
+  body: string
+  isBreaking: boolean
+  isEmpty: boolean
+  /** Subject, blank line, body — assembled by the backend so both sides cannot disagree. */
+  message: string
+}
+
+export interface GenerationCost {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  totalTokens: number
+  /** Null for a model that is not in the price table — tokens are still reported. */
+  usd: number | null
+}
+
+/** What `generateCommitMessage` returns. The text follows on the event channel. */
+export interface GenerationStarted {
+  id: string
+  worktreePath: string
+}
+
+export interface GenerationResult {
+  id: string
+  worktreePath: string
+  ok: boolean
+  error: string | null
+  /** Best first. One entry for an ordinary generation, several when asked. */
+  options: GeneratedMessage[]
+  cost: GenerationCost | null
+  /** Whether the model saw the whole change. Shown, not hidden. */
+  diffTruncated: boolean
+  note: string | null
+  /** The staged diff the message was written about; send it back with the commit. */
+  fingerprint: string | null
+}
+
+export interface ApiKeyPayload {
+  ok: boolean
+  error: string | null
+  status: AiAvailability
+}
+
 export interface ReflogEntry {
   sha: string
   /** The selector git accepts to reach it, e.g. `HEAD@{2}`. */
@@ -426,6 +495,18 @@ export interface Api {
     params: { worktreePath: string; message: string }
     result: MessageReviewPayload
   }
+  getAiStatus: { params: void; result: AiAvailability }
+  /** Stores the key, or forgets it when empty. The key is never returned. */
+  setApiKey: { params: { key: string }; result: ApiKeyPayload }
+  /**
+   * Starts a generation and returns at once — a model call can outlast the bridge's 60s
+   * ceiling, so the text arrives as `messageDelta` and `messageGenerated` events.
+   */
+  generateCommitMessage: {
+    params: { worktreePath: string; amend?: boolean; count?: number }
+    result: GenerationStarted
+  }
+  cancelGeneration: { params: { id: string }; result: boolean }
   getUndo: { params: { worktreePath: string }; result: UndoPayload }
   undo: { params: { worktreePath: string }; result: MutationPayload }
   getOperationLog: { params: { limit: number }; result: OperationLogEntry[] }
@@ -447,4 +528,11 @@ export interface Events {
   undoChanged: { worktreePath: string }
   /** The app performed a mutation. Pushed as it happens so the log can stream. */
   operationLogged: OperationLogEntry
+  /**
+   * A generation in progress. `message` is the whole message so far, not an increment, so a
+   * dropped or reordered event costs nothing.
+   */
+  messageDelta: { id: string; worktreePath: string; message: string }
+  /** A generation ended, however it ended. Fired exactly once per id. */
+  messageGenerated: GenerationResult
 }

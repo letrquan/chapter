@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Chapter.Core.Ai;
 using Chapter.Core.Editors;
 using Chapter.Core.Git;
 using Chapter.Core.Indexing;
@@ -21,11 +22,20 @@ public sealed class BridgeDispatcher
 
     public IndexService Index { get; } = new();
 
-    public BridgeDispatcher(WorkspaceService workspace, AppSettings settings)
+    /// <summary>Where the Claude API key lives. Never <c>settings.json</c>.</summary>
+    public ApiKeyStore Keys { get; }
+
+    /// <summary>Writes commit messages, when asked and when a credential exists.</summary>
+    public CommitMessageGenerator Generator { get; }
+
+    public BridgeDispatcher(WorkspaceService workspace, AppSettings settings, ApiKeyStore? keys = null)
     {
         Workspace = workspace;
         Settings = settings;
         _editors = new EditorLauncher(settings);
+
+        Keys = keys ?? new ApiKeyStore();
+        Generator = new CommitMessageGenerator(workspace.Git, settings, Keys, workspace.Log);
 
         // Close the loop the app would otherwise run against itself: the writer opens a
         // window on the watcher for the duration of every mutation, so the watcher can tell
@@ -62,6 +72,11 @@ public sealed class BridgeDispatcher
         Index.StatusChanged += status => RaiseEvent("indexStatus", status);
         Workspace.Undo.StackChanged += worktreePath => RaiseEvent("undoChanged", new { worktreePath });
         Workspace.Log.Appended += entry => RaiseEvent("operationLogged", entry);
+
+        // Generation outlives the call that started it — the bridge would time out long before
+        // a model does — so its text comes back the same way a file change does.
+        Generator.Progress += progress => RaiseEvent("messageDelta", progress);
+        Generator.Finished += result => RaiseEvent("messageGenerated", result);
     }
 
     private async void OnWorktreeChanged(WorktreeWatcher.WorktreeChange change)
@@ -148,6 +163,10 @@ public sealed class BridgeDispatcher
         _watcher.Changed -= OnWorktreeChanged;
         Workspace.Writer.SelfWriteScope = null;
 
+        // A generation in flight would otherwise go on holding an HTTP connection open and
+        // raising events at a window that has gone.
+        Generator.CancelAll();
+
         _watcher.Dispose();
     }
 
@@ -232,6 +251,16 @@ public sealed class BridgeDispatcher
 
         "reviewMessage" => await ReviewMessageAsync(
             request.ParamsAs<MessageReviewRequest>(), ct).ConfigureAwait(false),
+
+        // --- generated commit messages ----------------------------------------
+
+        "getAiStatus" => Generator.Describe(),
+
+        "setApiKey" => SetApiKey(request.ParamsAs<ApiKeyRequest>()),
+
+        "generateCommitMessage" => StartGeneration(request.ParamsAs<GenerateMessageRequest>()),
+
+        "cancelGeneration" => Generator.Cancel(request.ParamsAs<CancelGenerationRequest>().Id),
 
         "getUndo" => await GetUndoAsync(request.ParamsAs<WorktreeRequest>(), ct).ConfigureAwait(false),
 
@@ -368,7 +397,7 @@ public sealed class BridgeDispatcher
         var side = req.Side is DiffSide.Combined ? DiffSide.Unstaged : req.Side;
 
         var patch = await PatchBuilder
-            .ReadAsync(Workspace.Git, req.WorktreePath, req.Path, side, ct)
+            .ReadAsync(Workspace.Git, req.WorktreePath, req.Path, side, ct: ct)
             .ConfigureAwait(false);
 
         return FilePatchPayload.From(patch, req.Path, side);
@@ -418,6 +447,52 @@ public sealed class BridgeDispatcher
             .Select(a => a!)
             .ToArray(),
     };
+
+    /// <summary>
+    /// Stores or forgets the API key.
+    ///
+    /// Returns the resulting availability rather than a bare boolean, because the question the
+    /// UI is really asking is "can I generate now" — and answering it here saves a second call
+    /// on the one path where the answer has just changed.
+    /// </summary>
+    private object SetApiKey(ApiKeyRequest req)
+    {
+        var error = Keys.Store(req.Key);
+
+        return new ApiKeyPayload
+        {
+            Ok = error is null,
+            Error = error,
+            Status = Generator.Describe(),
+        };
+    }
+
+    /// <summary>
+    /// Begins a generation and returns its id at once.
+    ///
+    /// Deliberately not awaited: the bridge gives up on a call after sixty seconds, and a
+    /// model call is the first thing this app does that can legitimately take longer than
+    /// that. The text arrives on the event channel instead, which is the shape the roadmap's
+    /// cross-cutting "long-running operations" item asks for and this is its first use.
+    ///
+    /// The worktree is checked the same way every mutation checks it. Generation does not
+    /// write to the repository, but it does read the whole staged diff and send it to an API —
+    /// which makes an unchecked path a way to exfiltrate any repository on the machine, not
+    /// merely a way to read one.
+    /// </summary>
+    private object StartGeneration(GenerateMessageRequest req)
+    {
+        if (!Workspace.IsKnownWorktree(req.WorktreePath))
+            throw new InvalidOperationException("That worktree is not open in this window.");
+
+        var status = Generator.Describe();
+        if (!status.Available)
+            throw new InvalidOperationException(status.Reason ?? "Message generation is unavailable.");
+
+        var id = Generator.Begin(req.WorktreePath, req.Amend, Math.Clamp(req.Count, 1, 5));
+
+        return new GenerationStartedPayload { Id = id, WorktreePath = req.WorktreePath };
+    }
 
     private async Task<object> GetUndoAsync(WorktreeRequest req, CancellationToken ct)
     {

@@ -27,6 +27,12 @@ public sealed class AppSettings
     public Git.CommitMessagePolicy DefaultCommitPolicy { get; set; } = new();
 
     /// <summary>
+    /// How commit messages are generated. Carries no credential — this file is plaintext,
+    /// and the key lives encrypted in <see cref="Ai.ApiKeyStore"/>.
+    /// </summary>
+    public Ai.AiSettings Ai { get; set; } = new();
+
+    /// <summary>
     /// Commit message rules per repository, keyed by its path.
     ///
     /// Conventional commits are house style in some projects and noise in others, so this
@@ -100,6 +106,9 @@ public sealed class AppSettings
             settings.PreferredEditor ??= "";
             settings.CommitPolicies ??= [];
             settings.DefaultCommitPolicy ??= new Git.CommitMessagePolicy();
+            settings.Ai ??= new Ai.AiSettings();
+            settings.Ai.Model ??= "claude-opus-5";
+            settings.Ai.Effort ??= "low";
 
             return settings;
         }

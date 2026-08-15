@@ -378,7 +378,7 @@ public sealed class WorkspaceService
             return PatchRefused(request, "that worktree is not open in this window");
 
         var patch = await PatchBuilder
-            .ReadAsync(Git, request.WorktreePath, request.Path, request.Side, ct)
+            .ReadAsync(Git, request.WorktreePath, request.Path, request.Side, ct: ct)
             .ConfigureAwait(false);
 
         if (patch.IsBinary)
