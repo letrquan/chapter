@@ -11,16 +11,39 @@ import {
   currentLine,
   focusEditor,
   disposeWorktreeModels,
+  onDiffSelectionChanged,
+  onDirtyChanged,
+  isDirty,
+  currentText,
+  markSaved,
+  setSaveHandler,
   type ViewState,
 } from './editor'
 import './styles.css'
 
 import { call, on, isHosted } from './bridge'
+import {
+  initCommitPanel,
+  refreshCommitPanel,
+  resetCommitPanel,
+  clearCommitSelection,
+  forgetDraft,
+} from './commit'
+import { isConfirmOpen } from './confirm'
+import { initHunkBar, showHunkBar, hideHunkBar, stepHunk, updateSelectionState } from './hunks'
 import { icons, kindLetter } from './icons'
 import { registerCSharpNavigation, setNavigateHandler } from './navigation'
 import { openPalette, close as closePalette, isOpen as isPaletteOpen } from './palette'
 import { renderPreview, cancelPreview } from './preview'
-import type { ChangedFile, DiffScope, RepoInfo, Worktree, WorktreeChanges } from './protocol'
+import type {
+  ChangedFile,
+  DiffScope,
+  DiffSide,
+  RepoInfo,
+  UndoPayload,
+  Worktree,
+  WorktreeChanges,
+} from './protocol'
 
 /* ==========================================================================
    State
@@ -37,6 +60,13 @@ const isPreviewable = (path: string): boolean => /\.(md|markdown|mdx)$/i.test(pa
 interface TabState {
   path: string
   mode: Mode
+  /**
+   * Which comparison this tab shows. `combined` follows the scope, which is what every
+   * review view wants; the commit view opens a file on one side of the index, because
+   * "what am I about to commit" and "what am I leaving behind" are different diffs of the
+   * same file.
+   */
+  side: DiffSide
   viewState?: ViewState
 }
 
@@ -165,6 +195,7 @@ function renderShell(): void {
               <span class="files-title">Changed</span>
               <span class="files-count" id="files-count"></span>
               <span class="files-stat" id="files-stat"></span>
+              <button class="icon-btn" id="undo" title="Nothing to undo" disabled>${icons.undo}</button>
               <button class="icon-btn" id="refresh" title="Refresh (Ctrl+R)">${icons.refresh}</button>
             </div>
             <div class="scope-switch" id="scope-switch">
@@ -176,6 +207,7 @@ function renderShell(): void {
             </div>
             <div class="files-base" id="files-base"></div>
             <div class="files-list" id="files-list"></div>
+            <div class="commit-panel" id="commit-panel" hidden></div>
             <div class="splitter" id="split-files" style="right:-4px"></div>
           </section>
 
@@ -192,6 +224,7 @@ function renderShell(): void {
                 <button class="icon-btn" id="open-external" title="Open in external editor">${icons.external}</button>
               </div>
             </div>
+            <div class="hunk-bar" id="hunk-bar" hidden></div>
             <div class="editor-host" id="editor-host">
               <div class="markdown-preview" id="preview-host" hidden></div>
               <div class="placeholder" id="editor-empty">${EMPTY_STATE_HTML}</div>
@@ -275,7 +308,32 @@ function renderRail(): void {
  *   Every other re-render — clicking a file, a watcher notification — must keep the
  *   position the list is already at, or the row under the cursor jumps away.
  */
+/**
+ * The Uncommitted scope is where committing happens, so it shows the commit view instead
+ * of the flat list.
+ *
+ * A fifth scope button was the other option and it is the wrong shape: the switch answers
+ * "which slice of the work", and staged-versus-unstaged is not another slice — it is the
+ * same slice divided by the index. Putting it here also puts the question ("what has
+ * nobody committed yet") and the action in the same place.
+ */
+function isCommitScope(): boolean {
+  return state.scope === 'uncommitted'
+}
+
+function updatePanelMode(): void {
+  const list = document.getElementById('files-list')
+  const panel = document.getElementById('commit-panel')
+  if (!list || !panel) return
+
+  const commit = isCommitScope()
+  list.hidden = commit
+  panel.hidden = !commit
+}
+
 function renderFiles(restoreSaved = false): void {
+  updatePanelMode()
+
   const list = document.getElementById('files-list')!
   const currentScroll = list.scrollTop
   const count = document.getElementById('files-count')!
@@ -391,6 +449,11 @@ function renderTabs(): void {
     .join('')
 
   strip.innerHTML = tabs + '<div class="tabstrip-spacer"></div>'
+
+  // The markers live on the elements this just replaced, so they have to be reapplied.
+  // Without it, closing one tab silently clears every other tab's unsaved dot until
+  // something happens to change a dirty flag.
+  renderDirtyMarkers()
 }
 
 function dotColour(kind: string): string {
@@ -515,6 +578,14 @@ async function selectWorktree(path: string): Promise<void> {
   state.active = path
   renderRail()
 
+  // Cleared before the new worktree's read lands, so the panel never shows one worktree's
+  // staged files under another's name.
+  resetCommitPanel()
+  clearStaleBanner()
+  hideHunkBar()
+  void refreshUndo()
+  if (isCommitScope()) void refreshCommitPanel()
+
   // Start the symbol index in the background. The diff view is usable immediately;
   // navigation lights up when this finishes.
   void call('ensureIndex', { worktreePath: path }).catch(() => {})
@@ -616,6 +687,9 @@ async function onFilesChanged(worktreePath: string): Promise<void> {
 
   if (worktreePath !== state.active) return
 
+  if (isCommitScope()) await refreshCommitPanel()
+  void refreshUndo()
+
   const entry = worktreeState(worktreePath)
   const tab = entry.tabs.find((t) => t.path === entry.activePath)
   if (!tab) return
@@ -624,7 +698,7 @@ async function onFilesChanged(worktreePath: string): Promise<void> {
   await loadTabContent(worktreePath, tab)
 }
 
-async function openFile(path: string, mode?: Mode): Promise<void> {
+async function openFile(path: string, mode?: Mode, side: DiffSide = 'combined'): Promise<void> {
   if (!state.active) return
 
   const worktreePath = state.active
@@ -634,10 +708,15 @@ async function openFile(path: string, mode?: Mode): Promise<void> {
 
   let tab = entry.tabs.find((t) => t.path === path)
   if (!tab) {
-    tab = { path, mode: mode ?? 'diff' }
+    tab = { path, mode: mode ?? 'diff', side }
     entry.tabs.push(tab)
-  } else if (mode) {
-    tab.mode = mode
+  } else {
+    if (mode) tab.mode = mode
+
+    // The same file on the other side of the index is the same tab showing a different
+    // comparison, not a second tab: two rows in the tab strip with identical names and no
+    // way to tell them apart would be worse than switching in place.
+    tab.side = side
   }
 
   entry.activePath = path
@@ -679,8 +758,15 @@ async function loadTabContent(worktreePath: string, tab: TabState): Promise<void
 
     showPreview(false)
 
+    let fresh = true
+
     if (tab.mode === 'diff') {
-      const diff = await call('getDiff', { worktreePath, path: tab.path, scope: state.scope })
+      const diff = await call('getDiff', {
+        worktreePath,
+        path: tab.path,
+        scope: state.scope,
+        side: tab.side,
+      })
       if (!current()) return
 
       if (diff.isBinary) {
@@ -691,7 +777,7 @@ async function loadTabContent(worktreePath: string, tab: TabState): Promise<void
         return
       }
 
-      showDiff({
+      fresh = showDiff({
         worktreePath,
         path: tab.path,
         baseText: diff.baseText,
@@ -707,17 +793,86 @@ async function loadTabContent(worktreePath: string, tab: TabState): Promise<void
         return
       }
 
-      showCode(worktreePath, tab.path, file.text, file.language)
+      // The backend decides what may be written back: never a file read at a commit, never
+      // a binary, and never one whose encoding or line endings would not survive the round
+      // trip. The editor only obeys.
+      fresh = showCode(worktreePath, tab.path, file.text, file.language, file.isEditable)
     }
 
     showEmptyState(false)
     showMode(tab.mode)
-    restoreViewState(tab.viewState)
+
+    // A model with unsaved edits is left as it is, so restoring a view state captured
+    // against different text would put the caret somewhere arbitrary.
+    if (fresh) {
+      clearStaleBanner()
+      restoreViewState(tab.viewState)
+    } else {
+      showStaleBanner(tab.path)
+    }
+
+    renderDirtyMarkers()
+    void syncHunkBar()
   } catch (error) {
     if (!current()) return
     showNotice('Could not open file', message(error))
     toast('Could not open file', message(error), 'error')
   }
+}
+
+/**
+ * Everything that has to happen after the app changes the repository.
+ *
+ * One function rather than a list at each call site: staging renumbers hunks, moves the
+ * file between the two groups, changes both sides of its diff, and gives undo something
+ * new to offer. Forgetting any one of those leaves part of the window describing a state
+ * that no longer exists, and which part is forgotten depends on which caller was written
+ * last.
+ */
+async function afterMutation(): Promise<void> {
+  if (state.active) await refreshChanges(state.active)
+
+  await refreshCommitPanel()
+  await reloadActiveTab()
+
+  void refreshUndo()
+  void syncHunkBar()
+}
+
+/**
+ * Shows the hunk bar for the open file when its hunks can be staged, and hides it
+ * otherwise — a diff of committed work has nothing to stage.
+ */
+async function syncHunkBar(): Promise<void> {
+  if (!state.active || !isCommitScope()) {
+    hideHunkBar()
+    return
+  }
+
+  const entry = worktreeState(state.active)
+  const tab = entry.tabs.find((t) => t.path === entry.activePath)
+
+  if (!tab || tab.mode !== 'diff' || tab.side === 'combined') {
+    hideHunkBar()
+    return
+  }
+
+  await showHunkBar({ worktreePath: state.active, path: tab.path, side: tab.side })
+}
+
+/**
+ * Re-reads whatever tab is open. Called after a mutation, where the diff on screen is now
+ * describing a state the repository has left — staging a file changes both sides of it.
+ */
+async function reloadActiveTab(): Promise<void> {
+  if (!state.active) return
+
+  const entry = worktreeState(state.active)
+  const tab = entry.tabs.find((t) => t.path === entry.activePath)
+  if (!tab) return
+
+  tab.viewState = saveViewState()
+  await loadTabContent(state.active, tab)
 }
 
 async function restoreActiveTab(): Promise<void> {
@@ -789,6 +944,163 @@ const EMPTY_STATE_HTML = `
     <kbd>Ctrl</kbd> <kbd>R</kbd> refresh
   </div>`
 
+/* ==========================================================================
+   Saving, and the edits the app must not throw away
+   ========================================================================== */
+
+/**
+ * Writes the open file back.
+ *
+ * The text comes from the model rather than from anything the app cached: the model is
+ * what the user has been typing into, and it is the only copy of their edit.
+ */
+async function saveActiveFile(): Promise<void> {
+  if (!state.active) return
+
+  const worktreePath = state.active
+  const entry = worktreeState(worktreePath)
+  const tab = entry.tabs.find((t) => t.path === entry.activePath)
+  if (!tab || tab.mode !== 'code') return
+
+  if (!isDirty(worktreePath, tab.path)) return
+
+  const text = currentText(worktreePath, tab.path)
+  if (text === undefined) return
+
+  try {
+    const result = await call('saveFile', { worktreePath, path: tab.path, text })
+
+    if (!result.ok) {
+      toast('Could not save', result.error ?? undefined, 'error')
+      return
+    }
+
+    // Cleared only on a confirmed write, and only if the buffer still holds exactly what
+    // was written. Keystrokes landing while the bridge call was in flight are not saved,
+    // and clearing the flag over them hands the next watcher notification permission to
+    // overwrite them — silently, with no undo, which is the one thing the dirty flag
+    // exists to prevent.
+    if (currentText(worktreePath, tab.path) === text) {
+      markSaved(worktreePath, tab.path)
+      toast(`Saved ${splitPath(tab.path).name}`)
+    } else {
+      toast(`Saved ${splitPath(tab.path).name}`, 'You have kept typing since — save again to include it.')
+    }
+  } catch (error) {
+    toast('Could not save', message(error), 'error')
+  }
+}
+
+/**
+ * Says so when the file changed on disk while it was being edited here.
+ *
+ * The alternative — repainting over the edit — is what the app used to do, and it was
+ * correct only while nothing was editable. An agent writing to any file in the worktree
+ * triggers the same refresh.
+ */
+function showStaleBanner(path: string): void {
+  const host = document.getElementById('editor-host')
+  if (!host || host.querySelector('.stale-banner')) return
+
+  const banner = document.createElement('div')
+  banner.className = 'stale-banner'
+  banner.innerHTML = `
+    <span><strong>${esc(splitPath(path).name)}</strong> changed on disk. Your unsaved edits are
+    still here — saving overwrites the newer version.</span>
+    <button class="btn small" data-stale="reload">Discard mine and reload</button>
+    <button class="icon-btn" data-stale="dismiss" title="Keep editing">${icons.close}</button>`
+
+  host.appendChild(banner)
+}
+
+function clearStaleBanner(): void {
+  document.querySelector('.stale-banner')?.remove()
+}
+
+/** A dot on the tab, the way every editor marks unsaved work. */
+function renderDirtyMarkers(): void {
+  if (!state.active) return
+
+  const worktreePath = state.active
+  for (const element of document.querySelectorAll<HTMLElement>('[data-tab]')) {
+    const path = element.dataset.tab!
+    element.classList.toggle('dirty', isDirty(worktreePath, path))
+  }
+}
+
+/* ==========================================================================
+   Undo
+   ========================================================================== */
+
+/**
+ * Labels the undo button with what it would actually do.
+ *
+ * "Undo" alone is not enough here: the button reverses a git operation, and the difference
+ * between undoing a commit and undoing nothing at all has to be visible before it is
+ * pressed rather than after.
+ */
+async function refreshUndo(): Promise<void> {
+  const button = document.getElementById('undo') as HTMLButtonElement | null
+  if (!button) return
+
+  if (!state.active) {
+    button.disabled = true
+    button.title = 'Nothing to undo'
+    return
+  }
+
+  let undo: UndoPayload | null = null
+  try {
+    undo = await call('getUndo', { worktreePath: state.active })
+  } catch {
+    // The reflog read can fail in a repository with no commits. No undo offered, no noise.
+  }
+
+  const label = undo?.label ?? null
+  button.disabled = label === null
+  button.title = label ? `Undo ${label} (Ctrl+Alt+Z)` : 'Nothing to undo'
+  button.classList.toggle('danger', undo?.isDestructive === true)
+}
+
+async function undoLast(): Promise<void> {
+  if (!state.active) return
+
+  const worktreePath = state.active
+
+  let undo: UndoPayload
+  try {
+    undo = await call('getUndo', { worktreePath })
+  } catch (error) {
+    toast('Could not read the undo history', message(error), 'error')
+    return
+  }
+
+  if (!undo.label) {
+    toast('Nothing to undo', 'No mutation has been made in this worktree yet.')
+    return
+  }
+
+  const { confirm } = await import('./confirm')
+  const ok = await confirm({
+    title: `Undo ${undo.label}?`,
+    body: undo.warning ?? 'The repository goes back to where it was before that operation.',
+    confirmLabel: 'Undo',
+    recovery: undo.isDestructive ? 'permanent' : 'undoable',
+  })
+
+  if (!ok) return
+
+  try {
+    const result = await call('undo', { worktreePath })
+    if (!result.ok) toast('Could not undo', result.message, 'error')
+    else toast(result.message)
+  } catch (error) {
+    toast('Could not undo', message(error), 'error')
+  }
+
+  await refreshUndo()
+}
+
 function captureViewState(): void {
   if (!state.active) return
   const entry = worktreeState(state.active)
@@ -855,10 +1167,27 @@ async function setScope(scope: DiffScope): Promise<void> {
 
   for (const entry of state.byWorktree.values()) entry.changes = undefined
   renderRail()
+  updatePanelMode()
 
   if (!state.active) return
 
+  // Leaving the commit view drops its selection, or a later return would highlight a row
+  // against a file list rebuilt from a different comparison.
+  if (!isCommitScope()) {
+    clearCommitSelection()
+    hideHunkBar()
+
+    // The side has to go back with the view. A tab opened from the commit view carries
+    // `staged` or `unstaged`, and GetDiffAsync short-circuits on a named side and ignores
+    // the scope entirely — so the pane would go on showing HEAD-to-index while the switch
+    // above it claimed to be showing something else.
+    for (const entry of state.byWorktree.values()) {
+      for (const tab of entry.tabs) tab.side = 'combined'
+    }
+  }
+
   await refreshChanges(state.active)
+  if (isCommitScope()) await refreshCommitPanel()
 
   // The open file may not be in the new scope at all — an uncommitted-only view will not
   // contain a file whose changes are all committed. Say so rather than showing an
@@ -896,6 +1225,26 @@ function wireEvents(): void {
 
   document.getElementById('refresh')!.addEventListener('click', () => {
     if (state.active) void refreshChanges(state.active)
+    if (isCommitScope()) void refreshCommitPanel()
+  })
+
+  document.getElementById('undo')!.addEventListener('click', () => void undoLast())
+
+  document.getElementById('editor-host')!.addEventListener('click', (event) => {
+    const action = (event.target as HTMLElement).closest<HTMLElement>('[data-stale]')
+    if (!action) return
+
+    clearStaleBanner()
+    if (action.dataset.stale !== 'reload' || !state.active) return
+
+    // The user chose the version on disk. Marking it saved is what lets the reload
+    // through — the model is only protected while it holds edits nobody has resolved.
+    const entry = worktreeState(state.active)
+    const tab = entry.tabs.find((t) => t.path === entry.activePath)
+    if (!tab) return
+
+    markSaved(state.active, tab.path)
+    void loadTabContent(state.active, tab)
   })
 
   document.getElementById('rail-body')!.addEventListener('click', (event) => {
@@ -977,9 +1326,12 @@ async function removeRepo(repoPath: string): Promise<void> {
 
   for (const worktree of state.worktrees.get(repoPath) ?? []) {
     disposeWorktreeModels(worktree.path)
+    forgetDraft(worktree.path)
     state.byWorktree.delete(worktree.path)
     if (state.active === worktree.path) state.active = null
   }
+
+  resetCommitPanel()
 
   state.worktrees.delete(repoPath)
   state.repos = state.repos.filter((r) => r.path !== repoPath)
@@ -1051,6 +1403,33 @@ function wireSplitter(id: string, variable: string, min: number, max: number): v
 function wireKeyboard(): void {
   window.addEventListener('keydown', (event) => {
     const ctrl = event.ctrlKey || event.metaKey
+
+    // A modal question is on screen; it owns the keyboard until it is answered.
+    if (isConfirmOpen()) return
+
+    // Ctrl+S saves, from anywhere outside the editor. Monaco has its own binding for when
+    // the caret is inside it, because it swallows the keystroke before this listener runs.
+    if (ctrl && !event.shiftKey && event.key.toLowerCase() === 's') {
+      event.preventDefault()
+      void saveActiveFile()
+      return
+    }
+
+    // Deliberately not Ctrl+Z: Monaco owns that, and it means "undo my typing". This undoes
+    // a git operation, which is a different and much larger thing to be reversing.
+    if (ctrl && event.altKey && event.key.toLowerCase() === 'z') {
+      event.preventDefault()
+      void undoLast()
+      return
+    }
+
+    // Alt+Up/Down walks git's hunks. Plain arrows belong to the editor, and Ctrl+Up/Down
+    // is Monaco's own scroll, so the modifier that is left is the one used here.
+    if (event.altKey && !ctrl && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      event.preventDefault()
+      stepHunk(event.key === 'ArrowDown' ? 1 : -1)
+      return
+    }
 
     // Ctrl+1..9 jumps straight to a worktree — the app's primary motion.
     // altKey is excluded because AltGr reports as Ctrl+Alt on non-US layouts, where the
@@ -1180,6 +1559,25 @@ async function start(): Promise<void> {
   registerCSharpNavigation()
   setNavigateHandler((worktreePath, path, line, column) => {
     void navigateTo(worktreePath, path, line, column)
+  })
+
+  setSaveHandler(() => void saveActiveFile())
+  onDiffSelectionChanged(() => updateSelectionState())
+
+  // The tab's dot has to track the model, not the load: a keystroke makes a file dirty
+  // without anything else in the app being told.
+  onDirtyChanged(() => renderDirtyMarkers())
+
+  initCommitPanel(document.getElementById('commit-panel')!, {
+    activeWorktree: () => state.active,
+    openFile: (path, side) => void openFile(path, 'diff', side),
+    onMutated: () => void afterMutation(),
+    toast,
+  })
+
+  initHunkBar(document.getElementById('hunk-bar')!, {
+    onMutated: () => void afterMutation(),
+    toast,
   })
 
   const settings = await call('getSettings').catch(() => null)

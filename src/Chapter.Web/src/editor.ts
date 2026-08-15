@@ -101,7 +101,9 @@ const commonOptions: monaco.editor.IStandaloneEditorConstructionOptions = {
   guides: { indentation: true },
   bracketPairColorization: { enabled: true },
   contextmenu: true,
-  // This is a review tool: nothing here writes to disk.
+  // The default, and still the right one for anything read at a commit or shown in the
+  // diff. `setEditable` lifts it for the code view when the backend says the file can be
+  // written back — never for the diff, where the left pane is history.
   readOnly: true,
   domReadOnly: true,
   renderWhitespace: 'selection',
@@ -154,7 +156,7 @@ export function ensureModel(
   text: string,
   language: string,
 ): monaco.editor.ITextModel {
-  return getModel(worktreePath, path, 'work', text, language)
+  return getModel(worktreePath, path, 'work', text, language).model
 }
 
 export function hasModel(worktreePath: string, path: string): boolean {
@@ -162,9 +164,75 @@ export function hasModel(worktreePath: string, path: string): boolean {
   return Boolean(existing && !existing.isDisposed())
 }
 
+/* --------------------------------------------------------------------------
+   Unsaved edits
+
+   The app refreshes the open file whenever the watcher fires, which is correct while
+   nothing is editable and actively destructive once something is. An agent touching any
+   file in the worktree triggers that refresh, and a refresh that calls setValue throws
+   away whatever the user had typed — with no undo, because setValue is not an edit.
+
+   So a dirty model is never overwritten. The reload is refused instead, and the caller
+   is told, which turns a silent data loss into a visible "this changed underneath you".
+   -------------------------------------------------------------------------- */
+
+const dirty = new Set<string>()
+
+/** Guards the content changes we cause ourselves, which must not count as user edits. */
+let applyingOwnEdit = false
+
+const dirtyListeners = new Set<(worktreePath: string, path: string, isDirty: boolean) => void>()
+
+export function onDirtyChanged(
+  handler: (worktreePath: string, path: string, isDirty: boolean) => void,
+): void {
+  dirtyListeners.add(handler)
+}
+
+function setDirty(worktreePath: string, path: string, value: boolean): void {
+  const key = modelKey(worktreePath, path, 'work')
+  if (value === dirty.has(key)) return
+
+  if (value) dirty.add(key)
+  else dirty.delete(key)
+
+  for (const listener of dirtyListeners) listener(worktreePath, path, value)
+}
+
+export function isDirty(worktreePath: string, path: string): boolean {
+  return dirty.has(modelKey(worktreePath, path, 'work'))
+}
+
+export function anyDirty(): boolean {
+  return dirty.size > 0
+}
+
+/** The editor's current text, which is what a save has to write. */
+export function currentText(worktreePath: string, path: string): string | undefined {
+  const model = models.get(modelKey(worktreePath, path, 'work'))
+  return model && !model.isDisposed() ? model.getValue() : undefined
+}
+
+/** Clears the dirty flag after a successful save. */
+export function markSaved(worktreePath: string, path: string): void {
+  setDirty(worktreePath, path, false)
+}
+
+/**
+ * Whether the code editor accepts typing. The diff editor is never made editable — its
+ * left pane is a commit, and the right pane of a scoped comparison is not the working
+ * tree either.
+ */
+export function setEditable(editable: boolean): void {
+  codeEditor?.updateOptions({ readOnly: !editable, domReadOnly: !editable })
+}
+
 /**
  * Gets or creates a model. Monaco keys models by URI, and reusing the same URI is what
  * preserves undo history, folding and — via saved view state — scroll position.
+ *
+ * Returns whether the text on screen is the text that was asked for. False means the model
+ * held unsaved edits and was left alone.
  */
 function getModel(
   worktreePath: string,
@@ -172,20 +240,39 @@ function getModel(
   side: 'base' | 'work',
   text: string,
   language: string,
-): monaco.editor.ITextModel {
+): { model: monaco.editor.ITextModel; stale: boolean } {
   const key = modelKey(worktreePath, path, side)
   const existing = models.get(key)
 
   if (existing && !existing.isDisposed()) {
-    if (existing.getValue() !== text) existing.setValue(text)
-    return existing
+    if (existing.getValue() === text) return { model: existing, stale: false }
+
+    // The one case where the app must not repaint: the user has typed here and has not
+    // saved. Overwriting is unrecoverable, and Monaco's undo stack does not cover it.
+    if (side === 'work' && dirty.has(key)) return { model: existing, stale: true }
+
+    applyingOwnEdit = true
+    try {
+      existing.setValue(text)
+    } finally {
+      applyingOwnEdit = false
+    }
+
+    return { model: existing, stale: false }
   }
 
   const uri = modelUri(worktreePath, path, side)
   const model = monaco.editor.createModel(text, language, uri)
   models.set(key, model)
   modelOrigins.set(uri.toString(), { worktreePath, path, side })
-  return model
+
+  if (side === 'work') {
+    model.onDidChangeContent(() => {
+      if (!applyingOwnEdit) setDirty(worktreePath, path, true)
+    })
+  }
+
+  return { model, stale: false }
 }
 
 /** Drops every model belonging to a worktree — used when a repo is closed. */
@@ -195,6 +282,9 @@ export function disposeWorktreeModels(worktreePath: string): void {
       modelOrigins.delete(model.uri.toString())
       model.dispose()
       models.delete(key)
+      // Or the worktree stays permanently "dirty" to anything asking, and a later
+      // repository at the same path inherits a flag about files that no longer exist.
+      dirty.delete(key)
     }
   }
 }
@@ -220,12 +310,22 @@ export function initEditors(container: HTMLElement): void {
     hideUnchangedRegions: { enabled: true, contextLineCount: 3, minimumLineCount: 6 },
   })
 
+  // Registered on the editor rather than the window: Monaco swallows Ctrl+S while it has
+  // focus, so a global listener never sees the one keystroke that matters most here.
+  codeEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveHandler?.())
+
   // automaticLayout polls on a timer; a ResizeObserver reacts immediately and only when
   // the pane actually changes size, which matters when dragging the splitters.
   const observer = new ResizeObserver(() => layoutEditors())
   observer.observe(container)
 
   showMode('diff')
+}
+
+let saveHandler: (() => void) | null = null
+
+export function setSaveHandler(handler: () => void): void {
+  saveHandler = handler
 }
 
 /**
@@ -271,20 +371,35 @@ export interface DiffInput {
   language: string
 }
 
-export function showDiff(input: DiffInput): void {
-  if (!diffEditor) return
+/** @returns whether the pane shows the requested text; false when unsaved edits blocked it. */
+export function showDiff(input: DiffInput): boolean {
+  if (!diffEditor) return true
 
-  diffEditor.setModel({
-    original: getModel(input.worktreePath, input.path, 'base', input.baseText, input.language),
-    modified: getModel(input.worktreePath, input.path, 'work', input.workingText, input.language),
-  })
+  const base = getModel(input.worktreePath, input.path, 'base', input.baseText, input.language)
+  const work = getModel(input.worktreePath, input.path, 'work', input.workingText, input.language)
+
+  diffEditor.setModel({ original: base.model, modified: work.model })
   layoutEditors()
+
+  return !work.stale
 }
 
-export function showCode(worktreePath: string, path: string, text: string, language: string): void {
-  if (!codeEditor) return
-  codeEditor.setModel(getModel(worktreePath, path, 'work', text, language))
+/** @returns whether the pane shows the requested text; false when unsaved edits blocked it. */
+export function showCode(
+  worktreePath: string,
+  path: string,
+  text: string,
+  language: string,
+  editable = false,
+): boolean {
+  if (!codeEditor) return true
+
+  const result = getModel(worktreePath, path, 'work', text, language)
+  codeEditor.setModel(result.model)
+  setEditable(editable)
   layoutEditors()
+
+  return !result.stale
 }
 
 /** Moves the caret to a line and scrolls it into view, centred. No-op in preview. */
@@ -332,6 +447,95 @@ export function setSideBySide(sideBySide: boolean): void {
 export function focusEditor(mode: 'diff' | 'code'): void {
   if (mode === 'diff') diffEditor?.getModifiedEditor().focus()
   else codeEditor?.focus()
+}
+
+/** An inclusive run of lines the user has selected in one pane of the diff. */
+export interface LineRange {
+  start: number
+  end: number
+  /** True when nothing is dragged — this is just where the caret happens to sit. */
+  isCaret: boolean
+  /** Whether this pane holds the keyboard focus, which is what breaks a tie between carets. */
+  focused: boolean
+}
+
+/**
+ * What is selected in each pane of the diff.
+ *
+ * Both panes matter for line staging, and which one is which is not interchangeable: the
+ * modified pane can only ever select added lines, because removed lines are not in it.
+ * Picking a deletion means selecting it on the left.
+ */
+export function diffSelections(): { base: LineRange | null; work: LineRange | null } {
+  const original = diffEditor?.getOriginalEditor()
+  const modified = diffEditor?.getModifiedEditor()
+
+  const read = (editor: monaco.editor.ICodeEditor | undefined): LineRange | null => {
+    const selection = editor?.getSelection()
+    if (!selection) return null
+
+    // An empty selection is a caret, and a caret is still a line the user is pointing at —
+    // "stage this line" with no drag is a reasonable thing to mean.
+    return {
+      start: selection.startLineNumber,
+      end: selection.endLineNumber,
+      isCaret: selection.isEmpty(),
+      focused: editor?.hasTextFocus() ?? false,
+    }
+  }
+
+  const base = read(original)
+  const work = read(modified)
+
+  // Both panes always report something, and only one of them is what the user meant.
+  //
+  // The app plants carets itself — stepping between hunks calls setPosition — so a stale
+  // caret sits in the pane the user is not working in. Counting it alongside a real drag
+  // in the other pane silently widens the selection: a deletion under the forgotten caret
+  // gets staged with the additions, or destroyed by "Discard selection".
+  //
+  // So a real drag wins outright, and when there is none, only the focused pane's caret
+  // counts.
+  const dragged = (range: LineRange | null): boolean => range !== null && !range.isCaret
+
+  if (dragged(base) || dragged(work)) {
+    return { base: dragged(base) ? base : null, work: dragged(work) ? work : null }
+  }
+
+  return {
+    base: base?.focused ? base : null,
+    work: work?.focused ? work : null,
+  }
+}
+
+/**
+ * Whether anything in the diff counts as selected right now.
+ *
+ * Deliberately answered by `diffSelections` rather than by asking Monaco again: the two
+ * must agree, or a button enables itself on a stale caret that the mapping then ignores —
+ * or worse, acts on one the button never counted.
+ */
+export function hasLineSelection(): boolean {
+  const selection = diffSelections()
+  return selection.base !== null || selection.work !== null
+}
+
+/**
+ * Notifies when the selection in either diff pane changes, so a "stage selection" control
+ * can enable and disable itself as the user drags rather than only on a repaint.
+ */
+export function onDiffSelectionChanged(handler: () => void): void {
+  diffEditor?.getOriginalEditor().onDidChangeCursorSelection(() => handler())
+  diffEditor?.getModifiedEditor().onDidChangeCursorSelection(() => handler())
+}
+
+/** Scrolls the diff to a line, used when stepping between hunks. */
+export function revealDiffLine(line: number, side: 'base' | 'work' = 'work'): void {
+  const target = side === 'base' ? diffEditor?.getOriginalEditor() : diffEditor?.getModifiedEditor()
+  if (!target) return
+
+  target.revealLineInCenter(line)
+  target.setPosition({ lineNumber: line, column: 1 })
 }
 
 export { monaco }

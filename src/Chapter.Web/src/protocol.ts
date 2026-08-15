@@ -46,6 +46,15 @@ export interface ChangedFile {
   isUncommitted: boolean
   /** Has an unresolved merge conflict; nothing may be committed while any file does. */
   isConflicted: boolean
+  /**
+   * How the index differs from HEAD, or null when nothing about this file is staged.
+   * Independent of `unstagedKind`: an edited-staged-edited file carries both.
+   */
+  stagedKind: ChangeKind | null
+  /** How the working tree differs from the index, or null when nothing is unstaged. */
+  unstagedKind: ChangeKind | null
+  isStaged: boolean
+  isUnstaged: boolean
   fileName: string
   basePath: string
   hasBaseSide: boolean
@@ -54,6 +63,16 @@ export interface ChangedFile {
 
 /** Which slice of a worktree's work to show. */
 export type DiffScope = 'branch' | 'committed' | 'uncommitted' | 'lastCommit'
+
+/**
+ * Which half of an uncommitted change to show. `combined` defers to the scope and is what
+ * every review view asks for; the commit view names a side, because staging acts on one
+ * comparison specifically.
+ */
+export type DiffSide = 'combined' | 'staged' | 'unstaged'
+
+/** What a discard throws away. */
+export type DiscardTarget = 'unstaged' | 'everything'
 
 export interface DiffBase {
   sha: string
@@ -161,6 +180,91 @@ export interface SavePayload {
   bytesWritten: number
 }
 
+/** How seriously to take a commit-message problem. Neither ever blocks a commit. */
+export type MessageSeverity = 'warning' | 'error'
+
+export interface MessageProblem {
+  severity: MessageSeverity
+  message: string
+}
+
+export interface MessageReviewPayload {
+  subject: string
+  body: string
+  problems: MessageProblem[]
+  type: string | null
+  scope: string | null
+  isBreaking: boolean
+  isEmpty: boolean
+  hasErrors: boolean
+  /** The repository's recent subjects, so the box can show the house style. */
+  recentSubjects: string[]
+}
+
+/** What a commit would take, what it would leave, and whether it may happen at all. */
+export interface CommitViewPayload {
+  worktreePath: string
+  staged: ChangedFile[]
+  unstaged: ChangedFile[]
+  repository: RepositoryState
+  branch: string | null
+  isUnborn: boolean
+  canCommit: boolean
+  /** Why a commit is refused, or null when it is not. */
+  blockedReason: string | null
+  /** True and worth saying, but not a refusal — a detached HEAD, a merge being concluded. */
+  note: string | null
+  /**
+   * The same three answered for an amend, which needs nothing staged. Both are sent
+   * because the amend toggle is client-side; asking again on every flip would put a
+   * round-trip inside a checkbox.
+   */
+  canAmend: boolean
+  amendBlockedReason: string | null
+  amendNote: string | null
+  authorName: string | null
+  authorEmail: string | null
+  /** The message on HEAD, for prefilling an amend. */
+  headMessage: string | null
+}
+
+/**
+ * One hunk, as git divided it.
+ *
+ * Staging controls must be rendered from these boundaries, not from Monaco's change
+ * regions: Monaco computes its own diff and groups it differently, so a control placed on
+ * one of its regions would name a hunk the user never saw.
+ */
+export interface HunkPayload {
+  index: number
+  header: string
+  oldStart: number
+  oldCount: number
+  newStart: number
+  newCount: number
+  section: string
+  /** Lines with their leading markers. Positions here are what `PatchLineSelection.line` means. */
+  lines: string[]
+  addedLines: number
+  removedLines: number
+}
+
+export interface FilePatchPayload {
+  path: string
+  side: DiffSide
+  hunks: HunkPayload[]
+  isBinary: boolean
+  /** Send back with any selection made against these hunks. */
+  fingerprint: string
+}
+
+/** One changed line picked out of a hunk. */
+export interface PatchLineSelection {
+  hunk: number
+  /** Position within the hunk body, counting context and changes alike. */
+  line: number
+}
+
 export interface ReflogEntry {
   sha: string
   /** The selector git accepts to reach it, e.g. `HEAD@{2}`. */
@@ -241,7 +345,10 @@ export interface Api {
   removeRepo: { params: { repoPath: string }; result: boolean }
   getWorktrees: { params: { repoPath: string }; result: Worktree[] }
   getChanges: { params: { worktreePath: string; scope: DiffScope }; result: WorktreeChanges }
-  getDiff: { params: { worktreePath: string; path: string; scope: DiffScope }; result: DiffPayload }
+  getDiff: {
+    params: { worktreePath: string; path: string; scope: DiffScope; side?: DiffSide }
+    result: DiffPayload
+  }
   getFileContent: {
     params: { worktreePath: string; path: string; scope: DiffScope }
     result: FileContentPayload
@@ -272,6 +379,51 @@ export interface Api {
 
   getRepositoryState: { params: { worktreePath: string }; result: RepositoryState }
   saveFile: { params: { worktreePath: string; path: string; text: string }; result: SavePayload }
+
+  getCommitView: { params: { worktreePath: string }; result: CommitViewPayload }
+  stage: { params: { worktreePath: string; paths: string[] }; result: MutationPayload }
+  unstage: { params: { worktreePath: string; paths: string[] }; result: MutationPayload }
+  discard: {
+    params: {
+      worktreePath: string
+      paths: string[]
+      untracked: string[]
+      target: DiscardTarget
+    }
+    result: MutationPayload
+  }
+  getFilePatch: {
+    params: { worktreePath: string; path: string; side: DiffSide }
+    result: FilePatchPayload
+  }
+  applyPatch: {
+    params: {
+      worktreePath: string
+      path: string
+      side: DiffSide
+      hunks?: number[]
+      lines?: PatchLineSelection[]
+      reverse?: boolean
+      applyToWorkingTree?: boolean
+      fingerprint?: string
+    }
+    result: MutationPayload
+  }
+  commit: {
+    params: {
+      worktreePath: string
+      message: string
+      amend?: boolean
+      signOff?: boolean
+      sign?: boolean | null
+      coAuthors?: string[]
+    }
+    result: MutationPayload
+  }
+  reviewMessage: {
+    params: { worktreePath: string; message: string }
+    result: MessageReviewPayload
+  }
   getUndo: { params: { worktreePath: string }; result: UndoPayload }
   undo: { params: { worktreePath: string }; result: MutationPayload }
   getOperationLog: { params: { limit: number }; result: OperationLogEntry[] }

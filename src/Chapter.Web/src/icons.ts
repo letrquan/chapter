@@ -34,6 +34,22 @@ export const icons = {
   moon: svg('<path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/>'),
 
   diff: svg('<path d="M4 2.5v11M12 2.5v11"/><path d="M1.5 6h5M9.5 10h5"/>', 13),
+
+  /** Stage: a plus, matching the mental model of adding to the commit. */
+  stage: svg('<path d="M8 4v8M4 8h8"/>', 13),
+
+  /** Unstage: a minus, the exact inverse. */
+  unstage: svg('<path d="M4 8h8"/>', 13),
+
+  /** Discard: a bin, because it destroys rather than moves. */
+  discard: svg('<path d="M2.5 4h11M6 4V2.75A.75.75 0 0 1 6.75 2h2.5a.75.75 0 0 1 .75.75V4"/>' +
+    '<path d="M4 4l.6 8.3a1 1 0 0 0 1 .95h4.8a1 1 0 0 0 1-.95L12 4"/>', 13),
+
+  commit: svg('<circle cx="8" cy="8" r="2.75"/><path d="M1.5 8h3.75M10.75 8h3.75"/>'),
+
+  undo: svg('<path d="M3 7.5h7.25a3.25 3.25 0 1 1 0 6.5H6"/><path d="M5.75 4 2.5 7.5l3.25 3.5"/>'),
+
+  check: svg('<path d="M3 8.5 6.5 12 13 4.5"/>', 13),
 }
 
 /** Single-letter status marker shown beside each changed file. */
