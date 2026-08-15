@@ -49,6 +49,23 @@ public sealed class WorkspaceService
 
     public UndoService Undo { get; }
 
+    /// <summary>Moves changes between the working tree, the index and nowhere.</summary>
+    public StagingService Staging { get; }
+
+    public CommitService Commits { get; }
+
+    /// <summary>
+    /// The last repository-state reading per worktree, with the moment it was taken.
+    ///
+    /// The guard in this class's constructor runs before every mutation and costs four git
+    /// processes. That was fine when a mutation was a rare event; per-hunk staging makes it
+    /// several a second, and the state it reads — mid-merge, mid-rebase, conflicted — only
+    /// changes when the git directory does. So it is cached and dropped on the watcher's
+    /// git-state signal, which is what <see cref="InvalidateState"/> is wired to.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, RepositoryState> _stateCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public IReadOnlyList<string> Repos
     {
         get { lock (_repos) return _repos.ToArray(); }
@@ -74,14 +91,23 @@ public sealed class WorkspaceService
             // Every mutation is checked against the repository's state first, so the app
             // says "you are mid-rebase" instead of letting git refuse afterwards.
             //
-            // This costs four git processes per mutation, which is nothing for a commit and
-            // will not be nothing for Phase 1's per-hunk staging. Cache it there, against
-            // the watcher's git-state signal, rather than dropping the check.
+            // Reads through the cache, not the reader: hunk staging turns this from one
+            // check per commit into one per click, and four git processes behind each would
+            // be felt. The cache is dropped whenever the git directory changes, so the check
+            // is never answered from a state the repository has since left.
             Guard = async (worktree, kind, ct) =>
-                (await _state.ReadAsync(worktree, ct).ConfigureAwait(false)).CanWrite(kind),
+                (await GetRepositoryStateAsync(worktree, ct).ConfigureAwait(false)).CanWrite(kind),
+
+            // The other half of caching the guard's answer: every mutation through the one
+            // sanctioned write path drops it again. Without this the cache is not an
+            // optimisation but a bug — `merge --abort` would succeed and the next guard
+            // would still believe the merge is running.
+            Mutated = InvalidateState,
         };
 
         Undo = new UndoService(git, Writer);
+        Staging = new StagingService(git, Writer);
+        Commits = new CommitService(git, Writer, Undo);
     }
 
     /// <summary>
@@ -160,10 +186,63 @@ public sealed class WorkspaceService
         }
     }
 
+    /// <summary>
+    /// Builds both sides of a file's diff around the index.
+    ///
+    /// The index is a revision like any other to <c>git show</c> — <c>:path</c>, stage zero —
+    /// so both halves reduce to the same content read the app already does. What differs is
+    /// only which two revisions bracket the comparison.
+    /// </summary>
+    private async Task<DiffPayload> GetIndexSideDiffAsync(
+        string worktreePath, string repoRelativePath, DiffSide side, CancellationToken ct)
+    {
+        var state = await GetRepositoryStateAsync(worktreePath, ct).ConfigureAwait(false);
+
+        FileContent baseContent;
+        FileContent workingContent;
+
+        if (side is DiffSide.Staged)
+        {
+            // Before the first commit there is no HEAD to compare the index against, and
+            // every staged file is an addition against nothing.
+            baseContent = state.IsUnborn
+                ? FileContent.Empty
+                : await _diff.GetContentAtAsync(worktreePath, "HEAD", repoRelativePath, ct).ConfigureAwait(false);
+
+            workingContent = await _diff
+                .GetContentAtAsync(worktreePath, "", repoRelativePath, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            baseContent = await _diff
+                .GetContentAtAsync(worktreePath, "", repoRelativePath, ct).ConfigureAwait(false);
+
+            workingContent = await DiffService
+                .GetWorkingContentAsync(worktreePath, repoRelativePath, ct).ConfigureAwait(false);
+        }
+
+        return new DiffPayload
+        {
+            Path = repoRelativePath,
+            BaseText = baseContent.Text,
+            WorkingText = workingContent.Text,
+            Language = LanguageMap.ForPath(repoRelativePath),
+            IsBinary = baseContent.IsBinary || workingContent.IsBinary,
+            Kind = side is DiffSide.Staged ? "staged" : "unstaged",
+        };
+    }
+
     /// <summary>Builds both sides of a file's diff, ready for Monaco's diff editor.</summary>
     public async Task<DiffPayload> GetDiffAsync(
-        string worktreePath, string repoRelativePath, DiffScope scope = DiffScope.Branch, CancellationToken ct = default)
+        string worktreePath, string repoRelativePath, DiffScope scope = DiffScope.Branch,
+        DiffSide side = DiffSide.Combined, CancellationToken ct = default)
     {
+        if (side is not DiffSide.Combined)
+        {
+            return await GetIndexSideDiffAsync(worktreePath, repoRelativePath, side, ct)
+                .ConfigureAwait(false);
+        }
+
         // Reuse the scan the file list was built from. The client is looking at a list that
         // came from exactly this data, so recomputing it per click buys nothing.
         if (!_changeCache.TryGetValue((worktreePath, scope), out var changes))
@@ -251,9 +330,122 @@ public sealed class WorkspaceService
         };
     }
 
-    /// <summary>What state the worktree's repository is in — mid-merge, mid-rebase, conflicted.</summary>
-    public Task<RepositoryState> GetRepositoryStateAsync(string worktreePath, CancellationToken ct = default) =>
-        _state.ReadAsync(worktreePath, ct);
+    /// <summary>
+    /// What state the worktree's repository is in — mid-merge, mid-rebase, conflicted.
+    ///
+    /// Served from the cache when there is one. A reading that failed its probes is never
+    /// cached: <see cref="RepositoryState.ProbeFailed"/> makes the guard refuse, and
+    /// remembering a transient failure would keep refusing long after the cause was gone.
+    /// </summary>
+    public async Task<RepositoryState> GetRepositoryStateAsync(
+        string worktreePath, CancellationToken ct = default)
+    {
+        if (_stateCache.TryGetValue(worktreePath, out var cached)) return cached;
+
+        var state = await _state.ReadAsync(worktreePath, ct).ConfigureAwait(false);
+        if (!state.ProbeFailed) _stateCache[worktreePath] = state;
+
+        return state;
+    }
+
+    /// <summary>
+    /// Drops the cached repository state for a worktree. Called when the git directory
+    /// changes and after every mutation the app makes, since a commit or a resolved merge
+    /// is exactly the kind of thing that invalidates it.
+    /// </summary>
+    public void InvalidateState(string worktreePath) => _stateCache.TryRemove(worktreePath, out _);
+
+    /// <summary>The uncommitted work split into what a commit would take and what it would leave.</summary>
+    public async Task<CommitView> GetCommitViewAsync(string worktreePath, CancellationToken ct = default)
+    {
+        var repository = await GetRepositoryStateAsync(worktreePath, ct).ConfigureAwait(false);
+        return await Staging.ReadAsync(worktreePath, repository, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Stages, unstages or discards part of a file.
+    ///
+    /// The diff is re-read here rather than taken from the front-end. What the user selected
+    /// is a set of positions in a diff the backend produced moments ago; sending the patch
+    /// itself back would let the window write arbitrary content into the index, and would
+    /// mean a change made in between is silently overwritten by a stale one. Re-reading also
+    /// means the patch matches the file as it is now, which is the only version git will
+    /// accept.
+    /// </summary>
+    public async Task<GitMutation> ApplyPatchAsync(PatchRequest request, CancellationToken ct = default)
+    {
+        if (!IsKnownWorktree(request.WorktreePath))
+            return PatchRefused(request, "that worktree is not open in this window");
+
+        var patch = await PatchBuilder
+            .ReadAsync(Git, request.WorktreePath, request.Path, request.Side, ct)
+            .ConfigureAwait(false);
+
+        if (patch.IsBinary)
+            return PatchRefused(request, "a binary file cannot be staged by hunk");
+
+        if (patch.Hunks.Count == 0)
+            return PatchRefused(request, "there is nothing left to apply — it may have changed already");
+
+        // The race this app is built around: an agent can rewrite the file between the diff
+        // being rendered and the user clicking a hunk in it. Hunk 2 of the re-read diff is
+        // then a different change than the one they approved, and applying it silently is
+        // the worst available outcome.
+        if (request.Fingerprint.Length > 0
+            && !string.Equals(request.Fingerprint, patch.Fingerprint, StringComparison.Ordinal))
+        {
+            return PatchRefused(request,
+                "this file changed since those hunks were shown — look again before staging");
+        }
+
+        var lines = new Dictionary<int, HashSet<int>>();
+        foreach (var selection in request.Lines)
+        {
+            if (!lines.TryGetValue(selection.Hunk, out var set))
+                lines[selection.Hunk] = set = [];
+
+            set.Add(selection.Line);
+        }
+
+        var text = PatchBuilder.Build(
+            patch,
+            new PatchBuilder.Selection { Hunks = request.Hunks, Lines = lines },
+            request.Reverse);
+
+        if (text is null)
+            return PatchRefused(request, "nothing was selected");
+
+        return await PatchBuilder
+            .ApplyAsync(
+                Writer, request.WorktreePath, text,
+                DescribePatch(request), request.Reverse, request.ApplyToWorkingTree, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Names the operation the way the user asked for it, for the log and the toast.</summary>
+    private static string DescribePatch(PatchRequest request)
+    {
+        var verb = request.ApplyToWorkingTree
+            ? "discard"
+            : request.Reverse ? "unstage" : "stage";
+
+        var scale = request.Lines.Count > 0
+            ? request.Lines.Count == 1 ? "1 line of" : $"{request.Lines.Count} lines of"
+            : request.Hunks.Count == 1 ? "1 hunk of" : $"{request.Hunks.Count} hunks of";
+
+        return $"{verb} {scale} {request.Path}";
+    }
+
+    private static GitMutation PatchRefused(PatchRequest request, string reason) => new()
+    {
+        Operation = DescribePatch(request),
+        WorktreePath = request.WorktreePath,
+        CommandLine = "",
+        ExitCode = -1,
+        Failure = GitFailure.NothingToDo,
+        Detail = $"Could not {DescribePatch(request)}: {reason}",
+        Attempts = 0,
+    };
 
     /// <summary>
     /// Writes a file back to the working tree, preserving its encoding and line endings.

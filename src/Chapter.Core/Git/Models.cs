@@ -84,6 +84,29 @@ public sealed record ChangedFile
     /// </summary>
     public bool IsConflicted { get; init; }
 
+    /// <summary>
+    /// How the index differs from HEAD, or null when nothing about this file is staged.
+    ///
+    /// This and <see cref="UnstagedKind"/> are independent, not alternatives: a file edited,
+    /// staged, then edited again is <c>MM</c> in git's porcelain and belongs in both halves
+    /// of the commit view at once. Collapsing them into one "is dirty" flag — which is what
+    /// the read-only app did — makes that file impossible to render honestly, because the
+    /// user is about to commit one of the two versions and needs to see which.
+    /// </summary>
+    public ChangeKind? StagedKind { get; init; }
+
+    /// <summary>How the working tree differs from the index, or null when nothing is unstaged.</summary>
+    public ChangeKind? UnstagedKind { get; init; }
+
+    public bool IsStaged => StagedKind is not null;
+
+    /// <summary>
+    /// Untracked counts as unstaged. Git's porcelain reports it as neither — an untracked
+    /// file has no index entry to differ from — but every UI decision here is the same one:
+    /// it is work that <c>git add</c> would take, and it belongs beside the unstaged edits.
+    /// </summary>
+    public bool IsUnstaged => UnstagedKind is not null || Kind is ChangeKind.Untracked;
+
     public string FileName => Path[(Path.LastIndexOf('/') + 1)..];
 
     /// <summary>The path whose content should be read from the base revision.</summary>
@@ -116,6 +139,26 @@ public enum DiffScope
 
     /// <summary>Only the most recent commit.</summary>
     LastCommit,
+}
+
+/// <summary>
+/// Which half of an uncommitted change to show.
+///
+/// The scope switch answers "which slice of the work", and for reviewing that is enough.
+/// Committing needs a second axis the read-only app never had: the same file has one
+/// version in the index and another on disk, and staging a hunk means acting on exactly one
+/// of the two comparisons below.
+/// </summary>
+public enum DiffSide
+{
+    /// <summary>Whatever the scope says — the review view, index and working tree combined.</summary>
+    Combined,
+
+    /// <summary>HEAD to the index: what a commit right now would contain.</summary>
+    Staged,
+
+    /// <summary>The index to the working tree: what a commit right now would leave behind.</summary>
+    Unstaged,
 }
 
 /// <summary>What a worktree's changes are being compared against.</summary>

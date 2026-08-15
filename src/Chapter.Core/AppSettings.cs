@@ -23,6 +23,52 @@ public sealed class AppSettings
     /// <summary>Last active worktree per repository, so a restart lands where you left off.</summary>
     public Dictionary<string, string> LastWorktree { get; set; } = [];
 
+    /// <summary>Commit message rules applied where a repository has no rules of its own.</summary>
+    public Git.CommitMessagePolicy DefaultCommitPolicy { get; set; } = new();
+
+    /// <summary>
+    /// Commit message rules per repository, keyed by its path.
+    ///
+    /// Conventional commits are house style in some projects and noise in others, so this
+    /// has to be per repository rather than one global switch — the roadmap asks for exactly
+    /// that. A worktree inherits its repository's entry, since a linked worktree is the same
+    /// project by another path.
+    /// </summary>
+    public Dictionary<string, Git.CommitMessagePolicy> CommitPolicies { get; set; } = [];
+
+    /// <summary>
+    /// The policy governing a worktree: its own entry, otherwise the entry of whichever
+    /// configured repository contains it, otherwise the default.
+    ///
+    /// Longest match wins, so a rule set on a specific worktree beats the one on the
+    /// repository it belongs to rather than being shadowed by it.
+    /// </summary>
+    public Git.CommitMessagePolicy CommitPolicyFor(string worktreePath)
+    {
+        if (CommitPolicies.Count == 0 || string.IsNullOrEmpty(worktreePath)) return DefaultCommitPolicy;
+
+        if (CommitPolicies.TryGetValue(worktreePath, out var exact)) return exact;
+
+        Git.CommitMessagePolicy? best = null;
+        var bestLength = 0;
+
+        foreach (var (path, policy) in CommitPolicies)
+        {
+            if (path.Length <= bestLength) continue;
+            if (!worktreePath.StartsWith(path, StringComparison.OrdinalIgnoreCase)) continue;
+
+            // Guards against "C:\work\app" matching "C:\work\app-legacy": the character
+            // after the prefix has to be a separator, or the paths are merely similar.
+            if (worktreePath.Length > path.Length
+                && worktreePath[path.Length] is not ('\\' or '/')) continue;
+
+            best = policy;
+            bestLength = path.Length;
+        }
+
+        return best ?? DefaultCommitPolicy;
+    }
+
     private static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
@@ -52,6 +98,8 @@ public sealed class AppSettings
             settings.LastWorktree ??= [];
             settings.Theme ??= "system";
             settings.PreferredEditor ??= "";
+            settings.CommitPolicies ??= [];
+            settings.DefaultCommitPolicy ??= new Git.CommitMessagePolicy();
 
             return settings;
         }

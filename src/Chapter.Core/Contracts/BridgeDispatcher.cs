@@ -79,11 +79,17 @@ public sealed class BridgeDispatcher
                     // A commit or checkout leaves the working tree as it was, so the symbol
                     // index is still accurate — only the diff needs re-reading. Rebuilding
                     // here would cost seconds on a large repo for no benefit.
+                    //
+                    // The repository state is a different matter: this signal is exactly what
+                    // an agent starting a merge looks like, and the write guard must not go
+                    // on answering from a reading taken before it.
+                    Workspace.InvalidateState(change.WorktreePath);
                     break;
 
                 case WorktreeWatcher.ChangeReason.Overflow:
                     // Events were dropped, so no incremental update can be trusted.
                     Index.Invalidate(change.WorktreePath);
+                    Workspace.InvalidateState(change.WorktreePath);
                     break;
             }
 
@@ -185,6 +191,41 @@ public sealed class BridgeDispatcher
 
         "saveFile" => await SaveFileAsync(request.ParamsAs<SaveFileRequest>(), ct).ConfigureAwait(false),
 
+        // --- staging and committing ------------------------------------------
+
+        "getCommitView" => await GetCommitViewAsync(request.ParamsAs<WorktreeRequest>(), ct).ConfigureAwait(false),
+
+        "stage" => await MutateAsync(
+            request.ParamsAs<StageRequest>(),
+            (req, token) => Workspace.Staging.StageAsync(req.WorktreePath, req.Paths, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "unstage" => await MutateAsync(
+            request.ParamsAs<StageRequest>(),
+            (req, token) => Workspace.Staging.UnstageAsync(req.WorktreePath, req.Paths, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "discard" => await MutateAsync(
+            request.ParamsAs<StageRequest>(),
+            (req, token) => Workspace.Staging.DiscardAsync(
+                req.WorktreePath, req.Paths, req.Target, req.Untracked, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "getFilePatch" => await GetFilePatchAsync(request.ParamsAs<FileRequest>(), ct).ConfigureAwait(false),
+
+        "applyPatch" => await MutateAsync(
+            request.ParamsAs<PatchRequest>(),
+            (req, token) => Workspace.ApplyPatchAsync(req, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "commit" => await MutateAsync(
+            request.ParamsAs<CommitCommandRequest>(),
+            (req, token) => Workspace.Commits.CommitAsync(req.WorktreePath, ToCommitRequest(req), token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "reviewMessage" => await ReviewMessageAsync(
+            request.ParamsAs<MessageReviewRequest>(), ct).ConfigureAwait(false),
+
         "getUndo" => await GetUndoAsync(request.ParamsAs<WorktreeRequest>(), ct).ConfigureAwait(false),
 
         "undo" => await UndoAsync(request.ParamsAs<WorktreeRequest>(), ct).ConfigureAwait(false),
@@ -255,6 +296,101 @@ public sealed class BridgeDispatcher
             BytesWritten = result.BytesWritten,
         };
     }
+
+    /// <summary>
+    /// Runs a mutation and announces it, whatever the outcome.
+    ///
+    /// Every staging and commit method needs the same three things afterwards — the cached
+    /// scan dropped, the repository state re-read, and the front-end told — and a mutation
+    /// that skipped any of them would leave the window showing the state from before it.
+    /// Failure is not an exception to that: a discard that could not delete one file has
+    /// still deleted the others, and a commit refused for unmerged paths has still had the
+    /// index read.
+    /// </summary>
+    private async Task<object> MutateAsync<TRequest>(
+        TRequest request,
+        Func<TRequest, CancellationToken, Task<GitMutation>> run,
+        Func<TRequest, string> worktreeOf,
+        CancellationToken ct)
+    {
+        var worktreePath = worktreeOf(request);
+
+        if (!Workspace.IsKnownWorktree(worktreePath))
+            throw new InvalidOperationException("That worktree is not open in this window.");
+
+        try
+        {
+            var mutation = await run(request, ct).ConfigureAwait(false);
+            return MutationPayload.From(mutation);
+        }
+        finally
+        {
+            // The repository state looks after itself — GitWriter.Mutated drops it as part
+            // of running the command, so no call site has to remember.
+            AnnounceSelfWrite(worktreePath);
+        }
+    }
+
+    /// <summary>
+    /// The hunks of a file as git divides them, which is what the staging controls have to
+    /// be drawn from — Monaco groups its own diff differently, and a control placed on one
+    /// of its regions would name a hunk the user never saw.
+    /// </summary>
+    private async Task<object> GetFilePatchAsync(FileRequest req, CancellationToken ct)
+    {
+        var side = req.Side is DiffSide.Combined ? DiffSide.Unstaged : req.Side;
+
+        var patch = await PatchBuilder
+            .ReadAsync(Workspace.Git, req.WorktreePath, req.Path, side, ct)
+            .ConfigureAwait(false);
+
+        return FilePatchPayload.From(patch, req.Path, side);
+    }
+
+    private async Task<object> GetCommitViewAsync(WorktreeRequest req, CancellationToken ct)
+    {
+        var state = await Workspace.GetCommitViewAsync(req.WorktreePath, ct).ConfigureAwait(false);
+        var payload = CommitViewPayload.From(state);
+
+        var (name, email) = await Workspace.Commits
+            .ReadIdentityAsync(req.WorktreePath, ct).ConfigureAwait(false);
+
+        // Read unconditionally rather than only when amending: the commit box offers amend
+        // as a toggle, and fetching the message at the moment the toggle flips would put a
+        // round-trip in the middle of a keystroke.
+        var headMessage = state.IsUnborn
+            ? null
+            : await Workspace.Commits.ReadHeadMessageAsync(req.WorktreePath, ct).ConfigureAwait(false);
+
+        return payload with { AuthorName = name, AuthorEmail = email, HeadMessage = headMessage };
+    }
+
+    private async Task<object> ReviewMessageAsync(MessageReviewRequest req, CancellationToken ct)
+    {
+        var policy = Settings.CommitPolicyFor(req.WorktreePath);
+        var review = CommitMessageReader.Review(req.Message, policy);
+
+        var recent = await CommitMessageReader
+            .RecentSubjectsAsync(Workspace.Git, req.WorktreePath, 20, ct)
+            .ConfigureAwait(false);
+
+        return MessageReviewPayload.From(review, recent);
+    }
+
+    private static CommitRequest ToCommitRequest(CommitCommandRequest req) => new()
+    {
+        Message = req.Message,
+        Amend = req.Amend,
+        SignOff = req.SignOff,
+        Sign = req.Sign,
+        // Anything without an address is dropped rather than sent: git accepts the trailer
+        // and every tool that reads them ignores it, which looks like the app losing it.
+        CoAuthors = req.CoAuthors
+            .Select(CoAuthor.Parse)
+            .Where(a => a is not null)
+            .Select(a => a!)
+            .ToArray(),
+    };
 
     private async Task<object> GetUndoAsync(WorktreeRequest req, CancellationToken ct)
     {
@@ -389,7 +525,7 @@ public sealed class BridgeDispatcher
     }
 
     private async Task<object> GetDiffAsync(FileRequest req, CancellationToken ct) =>
-        await Workspace.GetDiffAsync(req.WorktreePath, req.Path, req.Scope, ct).ConfigureAwait(false);
+        await Workspace.GetDiffAsync(req.WorktreePath, req.Path, req.Scope, req.Side, ct).ConfigureAwait(false);
 
     private async Task<object> GetFileContentAsync(FileRequest req, CancellationToken ct) =>
         await Workspace.GetFileContentAsync(req.WorktreePath, req.Path, req.Scope, ct).ConfigureAwait(false);

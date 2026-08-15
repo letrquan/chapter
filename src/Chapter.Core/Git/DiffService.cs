@@ -46,6 +46,8 @@ public sealed class DiffService(GitCli git)
                 // Guarded because the list is empty in every repository that is not
                 // mid-merge, which is nearly all of them.
                 IsConflicted = working.Unmerged.Count > 0 && working.Unmerged.Contains(file.Path),
+                StagedKind = working.Staged.TryGetValue(file.Path, out var stagedKind) ? stagedKind : null,
+                UnstagedKind = working.Unstaged.TryGetValue(file.Path, out var unstagedKind) ? unstagedKind : null,
             });
         }
 
@@ -195,7 +197,32 @@ public sealed class DiffService(GitCli git)
         /// part-way through a merge, rebase, cherry-pick or revert.
         /// </summary>
         public List<string> Unmerged { get; init; } = [];
+
+        /// <summary>How the index differs from HEAD, per path — porcelain's X column.</summary>
+        public Dictionary<string, ChangeKind> Staged { get; init; } = new(StringComparer.Ordinal);
+
+        /// <summary>How the working tree differs from the index, per path — porcelain's Y column.</summary>
+        public Dictionary<string, ChangeKind> Unstaged { get; init; } = new(StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// Maps one half of porcelain v2's <c>XY</c> field onto a change kind.
+    ///
+    /// '.' means "no change on this side" and is the caller's signal to record nothing at
+    /// all, which is why it returns null rather than a kind: the difference between "not
+    /// staged" and "staged as a modification" is the entire point of reading these two
+    /// columns separately.
+    /// </summary>
+    private static ChangeKind? MapPorcelainState(char code) => code switch
+    {
+        'M' => ChangeKind.Modified,
+        'A' => ChangeKind.Added,
+        'D' => ChangeKind.Deleted,
+        'R' => ChangeKind.Renamed,
+        'C' => ChangeKind.Copied,
+        'T' => ChangeKind.TypeChanged,
+        _ => null,
+    };
 
     /// <summary>
     /// Extracts working-tree state from <c>git status --porcelain=v2 -z</c>: the untracked
@@ -239,8 +266,20 @@ public sealed class DiffService(GitCli git)
                     var isRename = entry[0] == '2';
                     var path = FieldAfter(entry, isRename ? 9 : 8);
 
-                    if (path is not null && entry.Length > 3 && (entry[2] != '.' || entry[3] != '.'))
-                        state.Dirty.Add(path);
+                    if (path is not null && entry.Length > 3)
+                    {
+                        // Read as two independent answers rather than one. `MM` is a file
+                        // staged and then edited again, and it has to reach the commit view
+                        // as both a staged change and an unstaged one — the user is choosing
+                        // between two versions of it.
+                        var staged = MapPorcelainState(entry[2]);
+                        var unstaged = MapPorcelainState(entry[3]);
+
+                        if (staged is not null) state.Staged[path] = staged.Value;
+                        if (unstaged is not null) state.Unstaged[path] = unstaged.Value;
+
+                        if (staged is not null || unstaged is not null) state.Dirty.Add(path);
+                    }
 
                     // Renamed/copied entry: consume its origin-path field too.
                     if (isRename && i < tokens.Length) i++;

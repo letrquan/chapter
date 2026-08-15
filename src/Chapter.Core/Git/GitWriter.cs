@@ -49,6 +49,21 @@ public sealed class GitWriter(GitCli git, OperationLog log)
     /// </summary>
     public Func<string, WriteKind, CancellationToken, Task<WriteGuard>>? Guard { get; set; }
 
+    /// <summary>
+    /// Called after every mutation that actually reached git, successful or not.
+    ///
+    /// This is what keeps the <see cref="Guard"/>'s cached answer honest. The guard reads
+    /// repository state, that state is cached to keep per-hunk staging from spawning four
+    /// git processes per click, and a commit or a <c>merge --abort</c> is precisely what
+    /// makes the cached reading wrong. Invalidating from the caller instead was the first
+    /// attempt and it leaks: every future call site has to remember, and the one that
+    /// forgets gets a guard answering from a state the repository left minutes ago.
+    ///
+    /// Failure is not an exception — a merge that stopped on conflicts changed the
+    /// repository as much as one that succeeded.
+    /// </summary>
+    public Action<string>? Mutated { get; set; }
+
     /// <summary>Runs a local mutation that stages, discards or commits.</summary>
     public Task<GitMutation> RunAsync(
         string worktreePath, string operation, CancellationToken ct, params string[] args) =>
@@ -95,11 +110,31 @@ public sealed class GitWriter(GitCli git, OperationLog log)
 
         stopwatch.Stop();
 
+        // Before the mutation is built, because BuildAsync asks git about the lock holder and
+        // any state read on the way there must not come from the pre-mutation cache.
+        NotifyMutated(worktreePath);
+
         var mutation = await BuildAsync(
             worktreePath, operation, result, attempt, stopwatch.ElapsedMilliseconds, ct).ConfigureAwait(false);
 
         Record(mutation);
         return mutation;
+    }
+
+    /// <summary>
+    /// Tells the owner the repository moved, without letting a subscriber turn a completed
+    /// mutation into a reported failure — by this point git has already done the work.
+    /// </summary>
+    private void NotifyMutated(string worktreePath)
+    {
+        try
+        {
+            Mutated?.Invoke(worktreePath);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Mutation subscriber failed: {ex.Message}");
+        }
     }
 
     private async Task<GitMutation> BuildAsync(

@@ -79,6 +79,13 @@ public sealed record FileRequest
 
     /// <summary>Must match the scope the file list was built with, or the two sides disagree.</summary>
     public Git.DiffScope Scope { get; init; } = Git.DiffScope.Branch;
+
+    /// <summary>
+    /// Which half of the uncommitted change to show. <see cref="Git.DiffSide.Combined"/>
+    /// defers to <see cref="Scope"/> and is what every review view asks for; the commit view
+    /// names a side, because staging a hunk means acting on one comparison specifically.
+    /// </summary>
+    public Git.DiffSide Side { get; init; } = Git.DiffSide.Combined;
 }
 
 public sealed record OpenInEditorRequest
@@ -117,6 +124,157 @@ public sealed record SaveFileRequest
 public sealed record OperationLogRequest
 {
     public int Limit { get; init; } = 100;
+}
+
+/// <summary>Whole-file staging, unstaging and discarding.</summary>
+public sealed record StageRequest
+{
+    public string WorktreePath { get; init; } = "";
+
+    /// <summary>Repo-relative paths, as the file list reports them.</summary>
+    public IReadOnlyList<string> Paths { get; init; } = [];
+
+    /// <summary>
+    /// Paths git does not track, which a discard has to delete rather than restore. Sent
+    /// separately because the front-end already knows which is which and the backend would
+    /// otherwise have to ask git again.
+    /// </summary>
+    public IReadOnlyList<string> Untracked { get; init; } = [];
+
+    /// <summary>How much of a file's uncommitted state a discard should throw away.</summary>
+    public Git.DiscardTarget Target { get; init; } = Git.DiscardTarget.Unstaged;
+}
+
+/// <summary>Staging or discarding part of a file, by hunk or by line range.</summary>
+public sealed record PatchRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Path { get; init; } = "";
+
+    /// <summary>Which comparison the line numbers refer to. Mixing the two corrupts the patch.</summary>
+    public Git.DiffSide Side { get; init; } = Git.DiffSide.Unstaged;
+
+    /// <summary>
+    /// Hunk indices to apply, as ordered in the diff for <see cref="Side"/>. Empty means
+    /// every hunk, which is how "stage this whole file's changes" reuses the same path.
+    /// </summary>
+    public IReadOnlyList<int> Hunks { get; init; } = [];
+
+    /// <summary>
+    /// Individual changed lines to apply, when the selection is finer than a hunk.
+    /// Takes precedence over <see cref="Hunks"/> when both are present.
+    /// </summary>
+    public IReadOnlyList<PatchLineSelection> Lines { get; init; } = [];
+
+    /// <summary>Reverses the patch — the direction that unstages or discards.</summary>
+    public bool Reverse { get; init; }
+
+    /// <summary>Applies to the working tree instead of the index. Only a discard does this.</summary>
+    public bool ApplyToWorkingTree { get; init; }
+
+    /// <summary>
+    /// The <see cref="Git.FilePatch.Fingerprint"/> the selection was made against.
+    ///
+    /// Sent back so the backend can tell that the diff it re-reads is the one the user was
+    /// looking at. Empty skips the check, which is only right for a whole-file operation
+    /// where there are no indices to misinterpret.
+    /// </summary>
+    public string Fingerprint { get; init; } = "";
+}
+
+/// <summary>A file's diff as hunks the front-end can render staging controls against.</summary>
+public sealed record FilePatchPayload
+{
+    public required string Path { get; init; }
+    public required Git.DiffSide Side { get; init; }
+    public required IReadOnlyList<HunkPayload> Hunks { get; init; }
+    public bool IsBinary { get; init; }
+
+    /// <summary>Send back with any selection made against these hunks.</summary>
+    public required string Fingerprint { get; init; }
+
+    public static FilePatchPayload From(Git.FilePatch patch, string path, Git.DiffSide side) => new()
+    {
+        Path = path,
+        Side = side,
+        IsBinary = patch.IsBinary,
+        Fingerprint = patch.Fingerprint,
+        Hunks = [.. patch.Hunks.Select((h, index) => new HunkPayload
+        {
+            Index = index,
+            Header = h.Header,
+            OldStart = h.OldStart,
+            OldCount = h.OldCount,
+            NewStart = h.NewStart,
+            NewCount = h.NewCount,
+            Section = h.Section,
+            Lines = h.Lines,
+            AddedLines = h.AddedLines,
+            RemovedLines = h.RemovedLines,
+        })],
+    };
+}
+
+/// <summary>
+/// One hunk, as git divided it.
+///
+/// The front-end must render its staging controls from these boundaries rather than from
+/// Monaco's. Monaco computes its own diff, and its change regions are grouped differently —
+/// so a button placed on a Monaco region would send an index naming a hunk the user never
+/// looked at.
+/// </summary>
+public sealed record HunkPayload
+{
+    public required int Index { get; init; }
+    public required string Header { get; init; }
+    public required int OldStart { get; init; }
+    public required int OldCount { get; init; }
+    public required int NewStart { get; init; }
+    public required int NewCount { get; init; }
+    public string Section { get; init; } = "";
+
+    /// <summary>
+    /// The hunk's lines with their leading markers. Positions in this list are exactly what
+    /// <see cref="PatchLineSelection.Line"/> means, so both sides count the same thing.
+    /// </summary>
+    public required IReadOnlyList<string> Lines { get; init; }
+
+    public int AddedLines { get; init; }
+    public int RemovedLines { get; init; }
+}
+
+/// <summary>One changed line the user picked out of a hunk.</summary>
+public sealed record PatchLineSelection
+{
+    /// <summary>Index of the hunk this line belongs to.</summary>
+    public int Hunk { get; init; }
+
+    /// <summary>
+    /// Position of the line within the hunk body, counting every line the hunk contains —
+    /// context, additions and deletions alike. Counting only changed lines would make the
+    /// index depend on a filter the two sides have to agree on exactly.
+    /// </summary>
+    public int Line { get; init; }
+}
+
+public sealed record CommitCommandRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Message { get; init; } = "";
+    public bool Amend { get; init; }
+    public bool SignOff { get; init; }
+
+    /// <summary>Null defers to the repository's own <c>commit.gpgsign</c>.</summary>
+    public bool? Sign { get; init; }
+
+    /// <summary>Co-authors as "Name &lt;email&gt;"; anything unparseable is dropped.</summary>
+    public IReadOnlyList<string> CoAuthors { get; init; } = [];
+}
+
+public sealed record MessageReviewRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Message { get; init; } = "";
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +349,94 @@ public sealed record MutationPayload
         ExitCode = mutation.ExitCode,
         Attempts = mutation.Attempts,
         ElapsedMs = mutation.ElapsedMs,
+    };
+}
+
+/// <summary>
+/// The commit view: what a commit would take, what it would leave, and whether it may
+/// happen at all.
+/// </summary>
+public sealed record CommitViewPayload
+{
+    public required string WorktreePath { get; init; }
+    public required IReadOnlyList<Git.ChangedFile> Staged { get; init; }
+    public required IReadOnlyList<Git.ChangedFile> Unstaged { get; init; }
+    public required Git.RepositoryState Repository { get; init; }
+
+    public string? Branch { get; init; }
+    public bool IsUnborn { get; init; }
+
+    public bool CanCommit { get; init; }
+
+    /// <summary>Why a commit is refused, or null when it is not.</summary>
+    public string? BlockedReason { get; init; }
+
+    /// <summary>Something true and worth saying that is not a refusal — a detached HEAD.</summary>
+    public string? Note { get; init; }
+
+    /// <summary>
+    /// The same three fields answered for an amend, which differs in one place: an amend
+    /// needs nothing staged. Both are sent because the amend toggle is client-side, and
+    /// asking the backend again on every flip would put a round-trip inside a checkbox.
+    /// </summary>
+    public bool CanAmend { get; init; }
+
+    public string? AmendBlockedReason { get; init; }
+
+    public string? AmendNote { get; init; }
+
+    /// <summary>Who git will record as the author, so the box can show it before the fact.</summary>
+    public string? AuthorName { get; init; }
+
+    public string? AuthorEmail { get; init; }
+
+    /// <summary>Present only for an amend, where the previous message is the starting point.</summary>
+    public string? HeadMessage { get; init; }
+
+    public static CommitViewPayload From(Git.CommitView state) => new()
+    {
+        WorktreePath = state.WorktreePath,
+        Staged = state.Staged,
+        Unstaged = state.Unstaged,
+        Repository = state.Repository,
+        Branch = state.Branch,
+        IsUnborn = state.IsUnborn,
+        CanCommit = state.Readiness.CanCommit,
+        BlockedReason = state.Readiness.Reason,
+        Note = state.Readiness.Note,
+        CanAmend = state.AmendReadiness.CanCommit,
+        AmendBlockedReason = state.AmendReadiness.Reason,
+        AmendNote = state.AmendReadiness.Note,
+    };
+}
+
+/// <summary>What is wrong with a commit message, if anything.</summary>
+public sealed record MessageReviewPayload
+{
+    public required string Subject { get; init; }
+    public required string Body { get; init; }
+    public IReadOnlyList<Git.MessageProblem> Problems { get; init; } = [];
+    public string? Type { get; init; }
+    public string? Scope { get; init; }
+    public bool IsBreaking { get; init; }
+    public bool IsEmpty { get; init; }
+    public bool HasErrors { get; init; }
+
+    /// <summary>The repository's recent subjects, so the box can show the house style.</summary>
+    public IReadOnlyList<string> RecentSubjects { get; init; } = [];
+
+    public static MessageReviewPayload From(
+        Git.CommitMessageReview review, IReadOnlyList<string> recentSubjects) => new()
+    {
+        Subject = review.Subject,
+        Body = review.Body,
+        Problems = review.Problems,
+        Type = review.Type,
+        Scope = review.Scope,
+        IsBreaking = review.IsBreaking,
+        IsEmpty = review.IsEmpty,
+        HasErrors = review.HasErrors,
+        RecentSubjects = recentSubjects,
     };
 }
 
