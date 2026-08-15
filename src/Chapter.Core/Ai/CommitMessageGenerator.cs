@@ -36,6 +36,12 @@ public sealed record AiAvailability
     public string? Hint { get; init; }
     public required string Model { get; init; }
     public required string Effort { get; init; }
+
+    /// <summary>
+    /// How many alternatives the "options" button should ask for, so it can label itself with
+    /// the number it is actually going to request rather than a hardcoded one.
+    /// </summary>
+    public required int OptionCount { get; init; }
 }
 
 /// <summary>What has been generated so far, as text rather than as half-arrived JSON.</summary>
@@ -151,6 +157,7 @@ public sealed class CommitMessageGenerator
                 Source = "none",
                 Model = ai.Model,
                 Effort = ai.Effort,
+                OptionCount = OptionsFor(ai),
             };
         }
 
@@ -193,8 +200,18 @@ public sealed class CommitMessageGenerator
             Hint = state.Hint,
             Model = ai.Model,
             Effort = ai.Effort,
+            OptionCount = OptionsFor(ai),
         };
     }
+
+    /// <summary>
+    /// How many alternatives to ask for, clamped to what the bridge will accept.
+    ///
+    /// Clamped here rather than only at the call site so the number the button labels itself
+    /// with is the number that will actually be requested — a setting of 9 that silently
+    /// becomes 5 is worse than one that says 5.
+    /// </summary>
+    internal static int OptionsFor(AiSettings ai) => Math.Clamp(ai.OptionCount, 2, 5);
 
     /// <summary>Unknown values fall back rather than failing — settings.json is hand-edited.</summary>
     internal static string NormaliseProvider(string? provider) =>
@@ -265,18 +282,41 @@ public sealed class CommitMessageGenerator
     }
 
     /// <summary>Stops a generation. Returns false when it had already finished.</summary>
-    public bool Cancel(string id)
-    {
-        if (!_running.TryGetValue(id, out var cancellation)) return false;
+    public bool Cancel(string id) =>
+        _running.TryGetValue(id, out var cancellation) && TryCancel(cancellation);
 
-        cancellation.Cancel();
-        return true;
-    }
-
-    /// <summary>Stops everything running for a worktree the user has navigated away from.</summary>
+    /// <summary>
+    /// Stops every generation in flight, whichever worktree it belongs to.
+    ///
+    /// Called from the dispatcher's <c>Dispose</c>, so it runs during window teardown — which
+    /// is exactly where an exception is least welcome and hardest to attribute.
+    /// </summary>
     public void CancelAll()
     {
-        foreach (var cancellation in _running.Values) cancellation.Cancel();
+        foreach (var cancellation in _running.Values) TryCancel(cancellation);
+    }
+
+    /// <summary>
+    /// Cancels a token source that may already have been disposed.
+    ///
+    /// The race is small and real: <see cref="Begin"/> removes and disposes the source in its
+    /// finally block, and a cancel that read it from the dictionary a moment earlier then
+    /// calls <c>Cancel</c> on a disposed object, which throws. Both callers are asking for
+    /// something that has already happened, so the answer is "yes, it is stopped" rather than
+    /// an exception — one of them is the front-end pressing Stop as the reply lands, and the
+    /// other is a window closing.
+    /// </summary>
+    private static bool TryCancel(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            cancellation.Cancel();
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
     }
 
     private void Raise(GenerationResult result)

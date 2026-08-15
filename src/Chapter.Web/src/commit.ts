@@ -547,8 +547,8 @@ function renderWrite(state: CommitViewPayload, draft: CommitDraft): string {
         needsKey || disabled
           ? ''
           : `<button class="btn small" data-action="write-options"
-                     title="Ask for three different framings">
-               <span>3 options</span>
+                     title="Ask for ${ai.optionCount} different framings of the same change">
+               <span>${ai.optionCount} options</span>
              </button>`
       }
 
@@ -572,10 +572,16 @@ function renderCost(): string {
   const tokens = `${lastCost.inputTokens.toLocaleString()} in · ${lastCost.outputTokens.toLocaleString()} out`
   const cached = lastCost.cacheReadTokens > 0 ? ` · ${lastCost.cacheReadTokens.toLocaleString()} cached` : ''
 
-  // Null for a model that is not in the price table. Tokens are still true; an invented
-  // price would not be.
+  // Absent for a model that is not in the price table — which is every OpenAI-compatible
+  // generation, since the table is Claude-only. Tokens are still true; an invented price
+  // would not be.
+  //
+  // Tested with `typeof`, not against null. The backend omits null members rather than
+  // writing them, so this arrives as `undefined` and a `=== null` check waves it through to
+  // `.toFixed()` — which throws inside the template, so `host.innerHTML` is never assigned
+  // and the panel freezes on whatever it was showing.
   const money =
-    lastCost.usd === null
+    typeof lastCost.usd !== 'number'
       ? ''
       : lastCost.usd < 0.01
         ? ` · &lt;$0.01`
@@ -718,7 +724,8 @@ function wire(): void {
         }
         break
       case 'write-options':
-        void write(3)
+        // The configured number, not a hardcoded one — the button labelled itself with it.
+        void write(ai?.optionCount ?? 3)
         break
       case 'stop-writing':
         stopWriting()

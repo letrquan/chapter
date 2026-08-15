@@ -3,6 +3,16 @@
  *
  * These two files are one contract expressed twice; change them together. Names are
  * camelCase here because the backend serialises with a camelCase naming policy.
+ *
+ * **Every `| null` below is really `| null | undefined`.** The backend serialises with
+ * `DefaultIgnoreCondition = WhenWritingNull`, so a null member is left out of the payload
+ * altogether and arrives as `undefined`. The types say `null` because that is what the C#
+ * side means, and because `?? `, `?.` and truthiness — how almost every field here is read —
+ * treat the two identically.
+ *
+ * The exception is strict equality. `x === null` is false for an omitted field, so a check
+ * written that way waves the value through to whatever dereferences it next. Use `== null`,
+ * `??`, or a `typeof` test on anything you are about to call a method on.
  */
 
 export interface RepoInfo {
@@ -294,6 +304,8 @@ export interface AiAvailability {
   hint: string | null
   model: string
   effort: string
+  /** How many alternatives the options button should ask for, already clamped to 2–5. */
+  optionCount: number
 }
 
 /** One message the model wrote, in parts rather than as prose. */

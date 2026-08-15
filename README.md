@@ -312,7 +312,7 @@ else is a setting, and every default is deliberate:
   "model": "claude-opus-5",     // a string, because the model list moves faster than this app
   "effort": "low",              // right for a short scoped task, not merely cheap
   "maxTokens": 1024,            // a commit message is short by definition
-  "optionCount": 3,             // how many alternatives "3 options" asks for
+  "optionCount": 3,             // how many alternatives the options button asks for, 2–5
   "inputTokenBudget": 24000     // ceiling on the whole request; the diff is cut to fit
 }
 ```

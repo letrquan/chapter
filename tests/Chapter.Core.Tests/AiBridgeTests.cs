@@ -324,6 +324,7 @@ public class AiBridgeTests : IDisposable
         Assert.Equal("environment", status.GetProperty("source").GetString());
         Assert.Equal("claude-opus-5", status.GetProperty("model").GetString());
         Assert.Equal("low", status.GetProperty("effort").GetString());
+        Assert.Equal(3, status.GetProperty("optionCount").GetInt32());
 
         // The protocol omits nulls rather than writing them, so an absent reason *is* the
         // "nothing is wrong" answer — the front-end's `string | null` reads undefined the
@@ -422,6 +423,28 @@ public class AiBridgeTests : IDisposable
         var openai = await CallAsync(dispatcher, "getAiStatus");
         Assert.Equal("openai", openai.GetProperty("provider").GetString());
         Assert.Equal("OPENAI_API_KEY", openai.GetProperty("environmentVariable").GetString());
+    }
+
+    [Fact]
+    public async Task The_configured_option_count_reaches_the_button_that_uses_it()
+    {
+        // It is a documented, hand-editable setting, so it has to do something. Reaching the
+        // front-end is what lets the button both label itself honestly and ask for that many.
+        var (dispatcher, _, settings) = await NewBridgeAsync();
+
+        settings.Ai.OptionCount = 5;
+        Assert.Equal(5, (await CallAsync(dispatcher, "getAiStatus"))
+            .GetProperty("optionCount").GetInt32());
+
+        // Clamped on this side, so the number shown is the number the bridge will accept — a
+        // setting of 9 that silently becomes 5 is worse than one that says 5.
+        settings.Ai.OptionCount = 9;
+        Assert.Equal(5, (await CallAsync(dispatcher, "getAiStatus"))
+            .GetProperty("optionCount").GetInt32());
+
+        settings.Ai.OptionCount = 0;
+        Assert.Equal(2, (await CallAsync(dispatcher, "getAiStatus"))
+            .GetProperty("optionCount").GetInt32());
     }
 
     [Fact]

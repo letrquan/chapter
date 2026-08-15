@@ -6,3 +6,6 @@ dist/
 .vs/
 .idea/
 TestResults/
+
+# Agent-TUI scratch: logs and local state, not part of the project.
+.book/
