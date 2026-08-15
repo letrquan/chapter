@@ -19,41 +19,70 @@ the current code will actively fight you.
 
 Nothing in later phases is safe until these exist.
 
-- [ ] **[BLOCKER]** Mutating git command path. `GitCli` already runs commands, but every
+The backend half is in. Everything below that is still unticked is UI, and lands with the
+Phase 1 surface that gives it something to act on.
+
+- [x] **[BLOCKER]** Mutating git command path. `GitCli` already runs commands, but every
       caller today treats a non-zero exit as "no data". Writes need the opposite: exit
       code, stderr, and *which* mutation failed, surfaced to the user.
-- [ ] **[BLOCKER][TRAP]** `GIT_OPTIONAL_LOCKS=0` is set on every invocation
+      → `GitWriter` + `GitMutation`, with `GitFailureClassifier` mapping git's stderr onto
+      the handful of outcomes the UI actually branches on.
+- [x] **[BLOCKER][TRAP]** `GIT_OPTIONAL_LOCKS=0` is set on every invocation
       (`GitCli.cs:61`). That's correct for reads — it stops the app taking `index.lock`
       while browsing — and wrong for writes. Split into read and write invocation paths.
-- [ ] **[BLOCKER][TRAP]** `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`
+      → `GitIntent.Read | Write | Network`; every call declares one.
+- [x] **[BLOCKER][TRAP]** `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`
       (`GitCli.cs:60-62`) mean any command needing credentials fails silently rather than
-      prompting. Fine for `status`; fatal for `push`. See Phase 6.
-- [ ] **[BLOCKER]** `index.lock` contention. An agent running `git add` while you commit
+      prompting. Fine for `status`; fatal for `push`. See Phase 5.
+      → The seam exists: `GitCli.AllowCredentialPrompts` governs `GCM_INTERACTIVE` for
+      network intent alone. Still false, because nothing pushes yet — Phase 5 flips it.
+- [x] **[BLOCKER]** `index.lock` contention. An agent running `git add` while you commit
       produces `Unable to create index.lock: File exists`. Detect it, retry with backoff,
       and tell the user *which process* holds it rather than surfacing raw git stderr.
-- [ ] **[BLOCKER]** Repository operation state. Detect and display in-progress
+      → Five attempts over ~1.3s, then `GitLock` names the holding process via the Restart
+      Manager, and distinguishes a live lock from one a crashed git left behind.
+- [x] **[BLOCKER]** Repository operation state. Detect and display in-progress
       merge / rebase / cherry-pick / revert / bisect (`MERGE_HEAD`, `REBASE_HEAD`,
       `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `BISECT_LOG` in the git dir). Half the write
       operations are illegal while one is active, and the UI must say so instead of
       letting git refuse.
-- [ ] **[BLOCKER]** Self-write invalidation. The app now mutates the worktree it watches.
+      → `RepositoryStateReader`, read from the *worktree's* git dir rather than the common
+      one. Wired as a guard on every mutation, with `RunUnguardedAsync` for the commands
+      that exist to clear the state the guard notices.
+- [x] **[BLOCKER]** Self-write invalidation. The app now mutates the worktree it watches.
       `WorktreeWatcher` will fire on the app's own writes, `WorkspaceService`'s change
       cache will be invalidated by them, and the index will re-parse files the app just
       wrote. Suppress or tag self-originated writes.
+      → **Tag, not suppress.** `WorktreeWatcher.BeginSelfWrite` attributes by time window,
+      because a mutation's real footprint is unknowable in advance. Suppression was tried
+      and reverted: an agent writing inside the window gets the same tag, so dropping
+      tagged batches loses the agent's change entirely — which is the one thing this app
+      exists to show. One redundant refresh is the cheaper mistake. Phase 1 can coalesce
+      by path, where it knows exactly what it wrote.
 - [ ] **[BLOCKER]** Confirmation model for destructive actions — discard, reset, force
       push, branch delete, worktree remove. One consistent affordance, not per-feature
-      dialogs.
-- [ ] **[HARD]** Undo, backed by reflog. Almost every git mutation is recoverable
+      dialogs. *(UI — nothing destructive is reachable yet.)*
+- [x] **[HARD]** Undo, backed by reflog. Almost every git mutation is recoverable
       (`ORIG_HEAD`, reflog, stash); a UI that surfaces "undo that" converts the whole app
       from scary to safe. Do this early — retrofitting undo is much harder.
+      → `UndoService`: per-worktree stack of inverse commands, plus the reflog underneath
+      it. Refuses when HEAD has moved since — the agent committing between the app's
+      mutation and the user's undo is the case that makes this app different.
+      **UI still to come.**
 - [ ] Editable Monaco. Currently `readOnly: true, domReadOnly: true` (`editor.ts:105-106`),
       which is load-bearing for V1 and has to become conditional, not deleted — the diff
       view should stay read-only even once conflict editing exists.
-- [ ] Save path with encoding preservation. `FileContent.FromBytes` detects UTF-8/UTF-16
+      *(The backend half is done: `FileContentPayload.isEditable` says when it is allowed.)*
+- [x] Save path with encoding preservation. `FileContent.FromBytes` detects UTF-8/UTF-16
       BOMs on read; writes must round-trip the same encoding and line endings, or the app
       silently reformats files.
-- [ ] Operation log — what the app did, when, with what git command. The first time it
+      → `TextFormat` carries encoding and newline; `WorkingTreeWriter` writes atomically
+      through a temp file in the same directory.
+- [x] Operation log — what the app did, when, with what git command. The first time it
       does something unexpected, this is the only way to find out what happened.
+      → `OperationLog`, in memory for the UI and mirrored to
+      `%LOCALAPPDATA%\Chapter\operations.log`, since the question is usually asked after a
+      restart.
 
 ## Phase 1 — Staging and committing
 
@@ -154,8 +183,11 @@ The credential story is the hard part, not the commands.
 
 **[HARD]** The hardest UI in the whole roadmap. Budget accordingly.
 
-- [ ] Detect conflicted state and list conflicted paths (`git status --porcelain=v2`
+- [x] Detect conflicted state and list conflicted paths (`git status --porcelain=v2`
       unmerged entries, `u` records — currently skipped by `ParseWorkingState`)
+      → Done in Phase 0, because the write guard needs it: `ParseWorkingState` now reads
+      `u` records, `ChangedFile.IsConflicted` carries it, and `RepositoryState` lists the
+      paths. Everything else in this phase is untouched.
 - [ ] **[HARD]** Three-way merge view. Monaco ships a two-way diff editor, not a merge
       editor — ours / base / theirs needs building from multiple editor instances, or
       adopting VS Code's merge-editor approach.
@@ -197,10 +229,13 @@ Nothing else on this list is unique to this app. These are.
 
 ## Cross-cutting
 
-- [ ] **Test strategy for mutations.** The current suite is safe because nothing writes.
+- [x] **Test strategy for mutations.** The current suite is safe because nothing writes.
       Write tests need disposable fixture repos — `RegressionTests` already has the
       `NewRepoAsync` / `Delete` helpers to build on. Never test mutations against the
       real validation repos.
+      → `WriteFoundationsTests` creates and destroys its own repo per test and never
+      touches the validation repos. `MutationParsingTests` covers the pure half — failure
+      classification, operation detection, encoding round-trips — with no repository at all.
 - [ ] **Dry-run / preview** for anything destructive
 - [ ] **Long-running operations** — the bridge has a 60s call timeout (`bridge.ts`); clone,
       fetch, and push will exceed it. Needs a progress protocol, not a longer timeout.
