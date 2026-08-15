@@ -44,6 +44,8 @@ export interface ChangedFile {
   isBinary: boolean
   /** Staged, unstaged or untracked — i.e. not yet committed. */
   isUncommitted: boolean
+  /** Has an unresolved merge conflict; nothing may be committed while any file does. */
+  isConflicted: boolean
   fileName: string
   basePath: string
   hasBaseSide: boolean
@@ -80,11 +82,114 @@ export interface DiffPayload {
   kind: string
 }
 
+/** How a file's bytes encode its characters. Preserved across a save. */
+export type FileEncoding = 'utf8' | 'utf8Bom' | 'utf16Le' | 'utf16Be'
+
+/** `mixed` means the file must be written back with its newlines untouched. */
+export type LineEnding = 'lf' | 'crLf' | 'mixed'
+
 export interface FileContentPayload {
   path: string
   text: string
   language: string
   isBinary: boolean
+  encoding: FileEncoding
+  lineEnding: LineEnding
+  /** False for content read at a commit and for binaries — the editor must not save over history. */
+  isEditable: boolean
+}
+
+/** A multi-step git operation that has stopped part-way and is waiting for the user. */
+export type RepositoryOperation =
+  | 'none'
+  | 'merge'
+  | 'rebase'
+  | 'rebaseInteractive'
+  | 'applyMailbox'
+  | 'cherryPick'
+  | 'revert'
+  | 'bisect'
+
+export interface RepositoryState {
+  worktreePath: string
+  operation: RepositoryOperation
+  branch: string | null
+  isDetached: boolean
+  /** Before the first commit: HEAD names a branch that has no tip yet. */
+  isUnborn: boolean
+  step: number | null
+  totalSteps: number | null
+  conflictedPaths: string[]
+  hasConflicts: boolean
+  isOperationInProgress: boolean
+  /** True when a probe failed, so the fields above are defaults rather than observations. */
+  probeFailed: boolean
+  /** A phrase for the UI: "rebase in progress (3/7)". */
+  description: string
+}
+
+/** Why a mutation failed, in the terms the UI acts on. */
+export type GitFailure =
+  | 'none'
+  | 'locked'
+  | 'operationInProgress'
+  | 'authenticationRequired'
+  | 'conflict'
+  | 'wouldLoseChanges'
+  | 'rejected'
+  | 'nothingToDo'
+  | 'notFound'
+  | 'unknown'
+
+export interface MutationPayload {
+  operation: string
+  ok: boolean
+  /** One sentence to show the user. Never empty, even when git said nothing useful. */
+  message: string
+  failure: GitFailure
+  commandLine: string
+  exitCode: number
+  /** Above one means the command was retried through lock contention. */
+  attempts: number
+  elapsedMs: number
+}
+
+export interface SavePayload {
+  path: string
+  ok: boolean
+  error: string | null
+  bytesWritten: number
+}
+
+export interface ReflogEntry {
+  sha: string
+  /** The selector git accepts to reach it, e.g. `HEAD@{2}`. */
+  selector: string
+  subject: string
+  timestamp: string | null
+  shortSha: string
+}
+
+export interface UndoPayload {
+  /** Null when nothing is recorded for this worktree. */
+  label: string | null
+  isDestructive: boolean
+  warning: string | null
+  /** Outlives the undo stack and the app itself. */
+  reflog: ReflogEntry[]
+}
+
+export interface OperationLogEntry {
+  timestamp: string
+  operation: string
+  worktreePath: string
+  commandLine: string
+  exitCode: number
+  elapsedMs: number
+  attempts: number
+  failure: string | null
+  detail: string | null
+  success: boolean
 }
 
 export interface AssetPayload {
@@ -164,13 +269,28 @@ export interface Api {
   searchSymbols: { params: { worktreePath: string; query: string; limit: number }; result: SymbolLocation[] }
   searchFiles: { params: { worktreePath: string; query: string; limit: number }; result: string[] }
   documentSymbols: { params: { worktreePath: string; path: string }; result: SymbolLocation[] }
+
+  getRepositoryState: { params: { worktreePath: string }; result: RepositoryState }
+  saveFile: { params: { worktreePath: string; path: string; text: string }; result: SavePayload }
+  getUndo: { params: { worktreePath: string }; result: UndoPayload }
+  undo: { params: { worktreePath: string }; result: MutationPayload }
+  getOperationLog: { params: { limit: number }; result: OperationLogEntry[] }
 }
 
 export type ApiMethod = keyof Api
 
 /** Events the backend pushes without being asked. */
 export interface Events {
-  filesChanged: { worktreePath: string }
+  /**
+   * `selfOriginated` marks a change the app made itself. It is information, not a licence
+   * to skip the refresh — attribution is by time window, so an agent's write landing
+   * alongside one of ours carries the same flag.
+   */
+  filesChanged: { worktreePath: string; selfOriginated?: boolean }
   worktreesChanged: { repoPath: string }
   indexStatus: IndexStatus
+  /** The undo stack for a worktree gained or lost an entry; re-label the action. */
+  undoChanged: { worktreePath: string }
+  /** The app performed a mutation. Pushed as it happens so the log can stream. */
+  operationLogged: OperationLogEntry
 }

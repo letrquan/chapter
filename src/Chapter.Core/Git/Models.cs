@@ -77,6 +77,13 @@ public sealed record ChangedFile
     /// </summary>
     public bool IsUncommitted { get; init; }
 
+    /// <summary>
+    /// True when the file has an unresolved merge conflict. Nothing may be committed while
+    /// any file is in this state, so the list has to carry it rather than making the UI ask
+    /// separately.
+    /// </summary>
+    public bool IsConflicted { get; init; }
+
     public string FileName => Path[(Path.LastIndexOf('/') + 1)..];
 
     /// <summary>The path whose content should be read from the base revision.</summary>

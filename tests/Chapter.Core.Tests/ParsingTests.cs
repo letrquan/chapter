@@ -186,7 +186,7 @@ public class WorkingStateParsingTests
                    + "? src/BrandNew.cs\0"
                    + "? docs/notes.md\0";
 
-        var (untracked, _) = DiffService.ParseWorkingState(output);
+        var untracked = DiffService.ParseWorkingState(output).Untracked;
 
         Assert.Equal(["src/BrandNew.cs", "docs/notes.md"], untracked);
     }
@@ -199,7 +199,7 @@ public class WorkingStateParsingTests
         var output = "2 R. N... 100644 100644 100644 abc abc R100 src/New.cs\0src/Old.cs\0"
                    + "? src/Untracked.cs\0";
 
-        var (untracked, _) = DiffService.ParseWorkingState(output);
+        var untracked = DiffService.ParseWorkingState(output).Untracked;
 
         Assert.Equal(["src/Untracked.cs"], untracked);
     }
@@ -214,7 +214,7 @@ public class WorkingStateParsingTests
                    + "1 MM N... 100644 100644 100644 abc abc src/Both.cs\0"
                    + "1 .. N... 100644 100644 100644 abc abc src/Clean.cs\0";
 
-        var (_, dirty) = DiffService.ParseWorkingState(output);
+        var dirty = DiffService.ParseWorkingState(output).Dirty;
 
         Assert.Equal(
             ["src/Both.cs", "src/Staged.cs", "src/Unstaged.cs"],
@@ -228,7 +228,7 @@ public class WorkingStateParsingTests
         // Splitting the entry on every space would truncate this path at "My".
         var output = "1 .M N... 100644 100644 100644 abc abc src/My Folder/A File.cs\0";
 
-        var (_, dirty) = DiffService.ParseWorkingState(output);
+        var dirty = DiffService.ParseWorkingState(output).Dirty;
 
         Assert.Contains("src/My Folder/A File.cs", dirty);
     }
@@ -238,7 +238,7 @@ public class WorkingStateParsingTests
     {
         var output = "2 R. N... 100644 100644 100644 abc abc R100 src/New.cs\0src/Old.cs\0";
 
-        var (_, dirty) = DiffService.ParseWorkingState(output);
+        var dirty = DiffService.ParseWorkingState(output).Dirty;
 
         Assert.Contains("src/New.cs", dirty);
     }

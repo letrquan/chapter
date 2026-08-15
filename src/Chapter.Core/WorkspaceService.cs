@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Chapter.Core.Contracts;
+using Chapter.Core.Diagnostics;
 using Chapter.Core.Git;
 
 namespace Chapter.Core;
@@ -9,11 +10,12 @@ namespace Chapter.Core;
 /// they have, and what changed in each. Keeps every git decision in Core so the WPF host
 /// stays a thin shell around the WebView.
 /// </summary>
-public sealed class WorkspaceService(GitCli git)
+public sealed class WorkspaceService
 {
-    private readonly WorktreeService _worktrees = new(git);
-    private readonly BaseBranchResolver _bases = new(git);
-    private readonly DiffService _diff = new(git);
+    private readonly WorktreeService _worktrees;
+    private readonly BaseBranchResolver _bases;
+    private readonly DiffService _diff;
+    private readonly RepositoryStateReader _state;
 
     /// <summary>Repository roots the user has opened, in the order they were added.</summary>
     private readonly List<string> _repos = [];
@@ -30,11 +32,56 @@ public sealed class WorkspaceService(GitCli git)
     private readonly ConcurrentDictionary<(string Worktree, DiffScope Scope), WorktreeChanges> _changeCache =
         new();
 
-    public GitCli Git { get; } = git;
+    /// <summary>
+    /// Worktrees the app has listed, and therefore the only ones it will write to.
+    /// Keyed case-insensitively because Windows paths arrive from git, the settings file
+    /// and the front-end with no agreement on casing.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, byte> _knownWorktrees = new(StringComparer.OrdinalIgnoreCase);
+
+    public GitCli Git { get; }
+
+    /// <summary>Every mutation the app has performed, for when something is unexplained.</summary>
+    public OperationLog Log { get; }
+
+    /// <summary>The only route by which this app changes a repository.</summary>
+    public GitWriter Writer { get; }
+
+    public UndoService Undo { get; }
 
     public IReadOnlyList<string> Repos
     {
         get { lock (_repos) return _repos.ToArray(); }
+    }
+
+    /// <param name="log">
+    /// Where mutations are recorded. Optional so tests and read-only callers get an
+    /// in-memory log rather than writing to the user's profile; the app passes a
+    /// persistent one.
+    /// </param>
+    public WorkspaceService(GitCli git, OperationLog? log = null)
+    {
+        Git = git;
+        Log = log ?? new OperationLog();
+
+        _worktrees = new WorktreeService(git);
+        _bases = new BaseBranchResolver(git);
+        _diff = new DiffService(git);
+        _state = new RepositoryStateReader(git);
+
+        Writer = new GitWriter(git, Log)
+        {
+            // Every mutation is checked against the repository's state first, so the app
+            // says "you are mid-rebase" instead of letting git refuse afterwards.
+            //
+            // This costs four git processes per mutation, which is nothing for a commit and
+            // will not be nothing for Phase 1's per-hunk staging. Cache it there, against
+            // the watcher's git-state signal, rather than dropping the check.
+            Guard = async (worktree, kind, ct) =>
+                (await _state.ReadAsync(worktree, ct).ConfigureAwait(false)).CanWrite(kind),
+        };
+
+        Undo = new UndoService(git, Writer);
     }
 
     /// <summary>
@@ -46,7 +93,9 @@ public sealed class WorkspaceService(GitCli git)
     {
         if (!Directory.Exists(anyPath)) return null;
 
-        var worktrees = await _worktrees.ListAsync(anyPath, ct).ConfigureAwait(false);
+        // Through GetWorktreesAsync rather than the lister directly, so opening a repo is
+        // also what admits its worktrees to the set the app may write to.
+        var worktrees = await GetWorktreesAsync(anyPath, ct).ConfigureAwait(false);
         var main = worktrees.FirstOrDefault(w => w.IsMain);
         if (main is null) return null;
 
@@ -64,8 +113,15 @@ public sealed class WorkspaceService(GitCli git)
         lock (_repos) _repos.RemoveAll(r => string.Equals(r, repoPath, StringComparison.OrdinalIgnoreCase));
     }
 
-    public Task<IReadOnlyList<Worktree>> GetWorktreesAsync(string repoPath, CancellationToken ct = default) =>
-        _worktrees.ListAsync(repoPath, ct);
+    public async Task<IReadOnlyList<Worktree>> GetWorktreesAsync(string repoPath, CancellationToken ct = default)
+    {
+        var worktrees = await _worktrees.ListAsync(repoPath, ct).ConfigureAwait(false);
+
+        // Listing is what admits a worktree to the set the app will write to.
+        foreach (var worktree in worktrees) _knownWorktrees[worktree.Path] = 0;
+
+        return worktrees;
+    }
 
     /// <summary>Worktree plus its changed-file set for the requested scope.</summary>
     public async Task<WorktreeChanges> GetChangesAsync(
@@ -181,8 +237,128 @@ public sealed class WorkspaceService(GitCli git)
             Text = content.Text,
             Language = LanguageMap.ForPath(repoRelativePath),
             IsBinary = content.IsBinary,
+            Encoding = content.Format.Encoding,
+            LineEnding = content.Format.LineEnding,
+            // Only the working tree can be written back. A file read at a commit is a
+            // historical object, and the editor must not offer to save over it.
+            //
+            // CanRoundTrip is the other half: a file that did not decode cleanly, or whose
+            // newlines disagree with each other, cannot be written back as it was found,
+            // and offering to edit it is offering to corrupt it.
+            IsEditable = scope is DiffScope.Branch or DiffScope.Uncommitted
+                         && !content.IsBinary
+                         && content.CanRoundTrip,
         };
     }
+
+    /// <summary>What state the worktree's repository is in — mid-merge, mid-rebase, conflicted.</summary>
+    public Task<RepositoryState> GetRepositoryStateAsync(string worktreePath, CancellationToken ct = default) =>
+        _state.ReadAsync(worktreePath, ct);
+
+    /// <summary>
+    /// Writes a file back to the working tree, preserving its encoding and line endings.
+    ///
+    /// The policy lives here rather than in <see cref="WorkingTreeWriter"/>, which is a
+    /// mechanism and stays able to create files. This is the bridge-facing path, and what
+    /// reaches it is a path and a string chosen by the front-end — so every property the
+    /// read side asserted has to be re-established rather than trusted:
+    ///
+    /// <list type="bullet">
+    /// <item>the worktree must be one the app has actually opened, or any directory on the
+    /// machine is a write root;</item>
+    /// <item>the file must already exist, or saving an untouched empty buffer resurrects a
+    /// file an agent deleted, as a zero-byte file, reporting success;</item>
+    /// <item>it must not be binary, or a PNG is replaced by the text of whatever was last
+    /// in the editor.</item>
+    /// </list>
+    /// </summary>
+    public async Task<SaveResult> SaveFileAsync(
+        string worktreePath, string repoRelativePath, string text, CancellationToken ct = default)
+    {
+        if (!IsKnownWorktree(worktreePath))
+            return Refuse(worktreePath, repoRelativePath, "that worktree is not open in this window");
+
+        var existing = await DiffService
+            .GetWorkingContentAsync(worktreePath, repoRelativePath, ct)
+            .ConfigureAwait(false);
+
+        var absolute = ResolveForWrite(worktreePath, repoRelativePath);
+
+        if (absolute is null || !File.Exists(absolute))
+            return Refuse(worktreePath, repoRelativePath, "that file is not in the working tree");
+
+        if (existing.IsBinary)
+            return Refuse(worktreePath, repoRelativePath, "that file is binary");
+
+        if (!existing.CanRoundTrip)
+            return Refuse(worktreePath, repoRelativePath,
+                "that file cannot be saved without reformatting it — its encoding or line endings would change");
+
+        using var scope = Writer.SelfWriteScope?.Invoke(worktreePath);
+
+        var result = await WorkingTreeWriter
+            .SaveAsync(worktreePath, repoRelativePath, text, existing.Format, ct)
+            .ConfigureAwait(false);
+
+        if (result.Success) InvalidateChanges(worktreePath);
+
+        Log.Append(new OperationLogEntry
+        {
+            Timestamp = DateTimeOffset.Now,
+            Operation = "save",
+            WorktreePath = worktreePath,
+            // Not a git command, but the log is the record of what the app did to the
+            // repository, and writing a file is squarely that.
+            CommandLine = $"write {repoRelativePath}",
+            ExitCode = result.Success ? 0 : 1,
+            Detail = result.Error,
+            Failure = result.Success ? null : "SaveFailed",
+        });
+
+        return result;
+    }
+
+    /// <summary>Records a refused save, so the log answers "why did nothing happen".</summary>
+    private SaveResult Refuse(string worktreePath, string repoRelativePath, string reason)
+    {
+        Log.Append(new OperationLogEntry
+        {
+            Timestamp = DateTimeOffset.Now,
+            Operation = "save",
+            WorktreePath = worktreePath,
+            CommandLine = $"write {repoRelativePath}",
+            ExitCode = 1,
+            Detail = reason,
+            Failure = "Refused",
+        });
+
+        return SaveResult.Failed(repoRelativePath, reason);
+    }
+
+    private static string? ResolveForWrite(string worktreePath, string repoRelativePath)
+    {
+        if (RepoPaths.EntersGitDirectory(repoRelativePath)) return null;
+
+        try
+        {
+            return RepoPaths.Resolve(worktreePath, repoRelativePath);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether the app has actually opened this worktree.
+    ///
+    /// The bridge takes a worktree path as a parameter, so without this any directory on
+    /// the machine is a valid write root — and the front-end renders content an agent
+    /// wrote. Membership is recorded as worktrees are listed rather than re-derived per
+    /// call, because the answer is needed on a write and asking git for it there would put
+    /// two more processes in front of every save.
+    /// </summary>
+    public bool IsKnownWorktree(string worktreePath) => _knownWorktrees.ContainsKey(worktreePath);
 
     /// <summary>
     /// Image extensions the preview will inline. Anything else is refused rather than

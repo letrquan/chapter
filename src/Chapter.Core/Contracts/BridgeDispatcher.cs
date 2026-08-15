@@ -11,15 +11,27 @@ namespace Chapter.Core.Contracts;
 /// Knows nothing about WebView2 — it takes a JSON string and returns a JSON string — so
 /// the whole protocol can be exercised without a window.
 /// </summary>
-public sealed class BridgeDispatcher(WorkspaceService workspace, AppSettings settings)
+public sealed class BridgeDispatcher
 {
-    public WorkspaceService Workspace { get; } = workspace;
-    public AppSettings Settings { get; } = settings;
+    public WorkspaceService Workspace { get; }
+    public AppSettings Settings { get; }
 
-    private readonly EditorLauncher _editors = new(settings);
+    private readonly EditorLauncher _editors;
     private readonly WorktreeWatcher _watcher = new();
 
     public IndexService Index { get; } = new();
+
+    public BridgeDispatcher(WorkspaceService workspace, AppSettings settings)
+    {
+        Workspace = workspace;
+        Settings = settings;
+        _editors = new EditorLauncher(settings);
+
+        // Close the loop the app would otherwise run against itself: the writer opens a
+        // window on the watcher for the duration of every mutation, so the watcher can tell
+        // the app's writes from an agent's.
+        Workspace.Writer.SelfWriteScope = _watcher.BeginSelfWrite;
+    }
 
     /// <summary>
     /// Shows a folder picker. Supplied by the window because the dialog must run on the
@@ -41,24 +53,26 @@ public sealed class BridgeDispatcher(WorkspaceService workspace, AppSettings set
     {
         _watcher.Changed += OnWorktreeChanged;
         Index.StatusChanged += status => RaiseEvent("indexStatus", status);
+        Workspace.Undo.StackChanged += worktreePath => RaiseEvent("undoChanged", new { worktreePath });
+        Workspace.Log.Appended += entry => RaiseEvent("operationLogged", entry);
     }
 
-    private async void OnWorktreeChanged(
-        string worktreePath, IReadOnlyList<string> paths, WorktreeWatcher.ChangeReason reason)
+    private async void OnWorktreeChanged(WorktreeWatcher.WorktreeChange change)
     {
         try
         {
             // The cached scan is now stale whatever the reason — a working-tree edit, a
-            // commit, or dropped events.
-            Workspace.InvalidateChanges(worktreePath);
+            // commit, or dropped events. This happens even for the app's own writes: they
+            // changed the repository just as much as anybody else's.
+            Workspace.InvalidateChanges(change.WorktreePath);
 
-            switch (reason)
+            switch (change.Reason)
             {
                 case WorktreeWatcher.ChangeReason.Files:
                     // Keep navigation honest while an agent works: a stale index sends F12
                     // to the wrong line, which is worse than no index at all.
-                    foreach (var path in paths)
-                        await Index.FileChangedAsync(worktreePath, path).ConfigureAwait(false);
+                    foreach (var path in change.Paths)
+                        await Index.FileChangedAsync(change.WorktreePath, path).ConfigureAwait(false);
                     break;
 
                 case WorktreeWatcher.ChangeReason.GitState:
@@ -69,11 +83,28 @@ public sealed class BridgeDispatcher(WorkspaceService workspace, AppSettings set
 
                 case WorktreeWatcher.ChangeReason.Overflow:
                     // Events were dropped, so no incremental update can be trusted.
-                    Index.Invalidate(worktreePath);
+                    Index.Invalidate(change.WorktreePath);
                     break;
             }
 
-            RaiseEvent("filesChanged", new { worktreePath });
+            // Announced whether or not the batch was ours.
+            //
+            // Dropping self-originated batches was the obvious saving and it is not safe:
+            // attribution is by time window, not by path, so an agent writing during the
+            // few hundred milliseconds around one of the app's own mutations is credited to
+            // the app and its change never reaches the UI. The justification for dropping —
+            // "the mutation announces its own" — only ever covered the app's write, never
+            // the agent's that got swept up with it.
+            //
+            // The cost of announcing anyway is one redundant refresh after a mutation. The
+            // cost of the alternative is failing to show what an agent did, which is the
+            // one thing this app exists for. The tag is still carried, for the operation
+            // log and for Phase 1 to coalesce by path once it knows exactly what it wrote.
+            RaiseEvent("filesChanged", new
+            {
+                worktreePath = change.WorktreePath,
+                selfOriginated = change.SelfOriginated,
+            });
         }
         catch (Exception ex)
         {
@@ -81,7 +112,31 @@ public sealed class BridgeDispatcher(WorkspaceService workspace, AppSettings set
         }
     }
 
-    public void Dispose() => _watcher.Dispose();
+    /// <summary>
+    /// Announces a change the app itself made, immediately, rather than waiting for the
+    /// watcher's debounce.
+    ///
+    /// Called after every mutation whether or not it succeeded: a command that fails
+    /// part-way — a merge stopping on conflicts is the ordinary case — has still changed
+    /// the working tree, and announcing only on success leaves the UI showing the state
+    /// from before it.
+    /// </summary>
+    private void AnnounceSelfWrite(string worktreePath)
+    {
+        Workspace.InvalidateChanges(worktreePath);
+        RaiseEvent("filesChanged", new { worktreePath, selfOriginated = true });
+    }
+
+    public void Dispose()
+    {
+        // Unhooked before the watcher goes, and the writer's hook into it cleared: the
+        // workspace outlives this dispatcher in tests and in any future multi-window host,
+        // and a mutation afterwards would otherwise open a scope on a disposed watcher.
+        _watcher.Changed -= OnWorktreeChanged;
+        Workspace.Writer.SelfWriteScope = null;
+
+        _watcher.Dispose();
+    }
 
     public async Task<string> HandleAsync(string requestJson, CancellationToken ct = default)
     {
@@ -122,6 +177,19 @@ public sealed class BridgeDispatcher(WorkspaceService workspace, AppSettings set
         "getFileContent" => await GetFileContentAsync(request.ParamsAs<FileRequest>(), ct).ConfigureAwait(false),
 
         "getAsset" => await GetAssetAsync(request.ParamsAs<FileRequest>(), ct).ConfigureAwait(false),
+
+        // --- writing ---------------------------------------------------------
+
+        "getRepositoryState" => await Workspace
+            .GetRepositoryStateAsync(request.ParamsAs<WorktreeRequest>().WorktreePath, ct).ConfigureAwait(false),
+
+        "saveFile" => await SaveFileAsync(request.ParamsAs<SaveFileRequest>(), ct).ConfigureAwait(false),
+
+        "getUndo" => await GetUndoAsync(request.ParamsAs<WorktreeRequest>(), ct).ConfigureAwait(false),
+
+        "undo" => await UndoAsync(request.ParamsAs<WorktreeRequest>(), ct).ConfigureAwait(false),
+
+        "getOperationLog" => Workspace.Log.Recent(request.ParamsAs<OperationLogRequest>().Limit),
 
         "getSettings" => Settings,
 
@@ -168,6 +236,50 @@ public sealed class BridgeDispatcher(WorkspaceService workspace, AppSettings set
 
     private bool OpenInEditor(OpenInEditorRequest req) =>
         _editors.Open(req.WorktreePath, req.Path, req.Line, req.Column, req.Editor);
+
+    private async Task<object> SaveFileAsync(SaveFileRequest req, CancellationToken ct)
+    {
+        var result = await Workspace
+            .SaveFileAsync(req.WorktreePath, req.Path, req.Text, ct)
+            .ConfigureAwait(false);
+
+        // Announced even on failure: the atomic write can fail after the rename, and a
+        // refused save still costs nothing to refresh from.
+        AnnounceSelfWrite(req.WorktreePath);
+
+        return new SavePayload
+        {
+            Path = result.Path,
+            Ok = result.Success,
+            Error = result.Error,
+            BytesWritten = result.BytesWritten,
+        };
+    }
+
+    private async Task<object> GetUndoAsync(WorktreeRequest req, CancellationToken ct)
+    {
+        var point = Workspace.Undo.Peek(req.WorktreePath);
+        var reflog = await Workspace.Undo.ReadReflogAsync(req.WorktreePath, 25, ct).ConfigureAwait(false);
+
+        return new UndoPayload
+        {
+            Label = point?.Label,
+            IsDestructive = point?.IsDestructive ?? false,
+            Warning = point?.Warning,
+            Reflog = reflog,
+        };
+    }
+
+    private async Task<object> UndoAsync(WorktreeRequest req, CancellationToken ct)
+    {
+        var mutation = await Workspace.Undo.UndoAsync(req.WorktreePath, ct).ConfigureAwait(false);
+
+        // A failed undo can still have moved something — `reset` is not all-or-nothing — so
+        // the refresh is unconditional.
+        AnnounceSelfWrite(req.WorktreePath);
+
+        return MutationPayload.From(mutation);
+    }
 
     /// <summary>
     /// Recent repositories, normalised to their main worktree. A path recorded from the
