@@ -74,6 +74,15 @@ interface WorktreeState {
   tabs: TabState[]
   activePath: string | null
   changes?: WorktreeChanges
+  /**
+   * Something changed in this worktree since its scan was taken.
+   *
+   * Kept as a flag rather than by discarding `changes`, so the rail can go on showing the
+   * last known count while the scan itself is deferred until somebody actually looks. A
+   * slightly stale badge is worth far more than the git process it would cost to keep
+   * exact — see the note in the watcher handler.
+   */
+  stale?: boolean
   filesScroll: number
   loading: boolean
   error?: string
@@ -267,10 +276,15 @@ function renderRail(): void {
         const isActive = state.active === worktree.path
         const key = !collapsed && worktree.isUsable && shortcut < 9 ? ++shortcut : null
 
+        // A stale badge is a count from a moment ago, not a wrong one — the scan behind
+        // it is deferred until somebody opens the worktree. Marking it says so rather
+        // than pretending the number is live.
+        const stale = entry?.stale === true
         const badge =
           count === null
             ? ''
-            : `<span class="wt-badge ${count === 0 ? 'zero' : ''}">${count}</span>`
+            : `<span class="wt-badge ${count === 0 ? 'zero' : ''} ${stale ? 'stale' : ''}"
+                     ${stale ? 'title="changed since this count was taken"' : ''}>${count}</span>`
 
         const title = worktree.isPrunable
           ? `Unavailable — ${esc(worktree.prunableReason ?? 'worktree directory is missing')}`
@@ -572,6 +586,7 @@ async function addRepo(): Promise<void> {
 
 async function selectWorktree(path: string): Promise<void> {
   if (state.active === path) return
+  noteInteraction()
 
   // Whatever the palette is showing was computed against the worktree being left, so
   // acting on it after the switch would open the wrong copy of a file.
@@ -602,9 +617,20 @@ async function selectWorktree(path: string): Promise<void> {
   const entry = worktreeState(path)
 
   // Cached worktrees repaint immediately; only a first visit shows the skeleton.
+  //
+  // A stale entry still repaints from the cache first — the counts are a moment old, not
+  // wrong — and then re-reads behind it. Waiting for the scan before painting would put
+  // the deferred cost straight back into the switch it was moved out of.
   if (entry.changes) {
     renderFiles(true)
     renderTabs()
+
+    if (entry.stale) {
+      void refreshChanges(path).then(() => {
+        if (state.active === path) void reloadActiveTab()
+      })
+    }
+
     await restoreActiveTab()
     return
   }
@@ -635,6 +661,35 @@ async function selectWorktree(path: string): Promise<void> {
 }
 
 /**
+ * How quiet the app has to be before background scans resume.
+ *
+ * A fixed gap between scans was the first attempt and it made things worse: spacing
+ * fourteen git scans out does not remove the contention, it stretches it over more of the
+ * time the user is clicking. Measured, that turned a 118-151ms click into 174-246ms.
+ *
+ * Badges are background information and a click is not, so the prefetch yields to the
+ * user outright — it does no work at all while anything is being clicked, and picks up
+ * once the window has been still for this long.
+ */
+const PREFETCH_IDLE_MS = 400
+
+/** When the user last did something the app had to respond to. */
+let lastInteraction = 0
+
+function noteInteraction(): void {
+  lastInteraction = performance.now()
+}
+
+/** Resolves once the user has stopped clicking for {@link PREFETCH_IDLE_MS}. */
+async function waitForQuiet(): Promise<void> {
+  for (;;) {
+    const since = performance.now() - lastInteraction
+    if (since >= PREFETCH_IDLE_MS) return
+    await new Promise((resolve) => setTimeout(resolve, PREFETCH_IDLE_MS - since))
+  }
+}
+
+/**
  * Fills in every worktree's change count in the background.
  *
  * Without this the rail only shows a badge once you have visited a worktree, which
@@ -646,9 +701,22 @@ async function prefetchBadges(): Promise<void> {
   // results would otherwise be cached as if they belonged to the new scope, and
   // selectWorktree trusts that cache without refetching.
   const scope = state.scope
-  const targets = orderedWorktrees().filter((w) => !state.byWorktree.get(w.path)?.changes)
+  const targets = orderedWorktrees().filter((w) => {
+    const entry = state.byWorktree.get(w.path)
+    return !entry?.changes || entry.stale
+  })
 
   for (const worktree of targets) {
+    if (scope !== state.scope) return
+    if (worktree.path === state.active) continue
+
+    // Stand aside while the user is working. Each of these is several git processes over
+    // a whole tree; fourteen of them back to back is what made a click during the
+    // prefetch three times slower than the same click a second later.
+    await waitForQuiet()
+
+    // Re-checked after the wait, not just before it: the user may have switched to this
+    // worktree while the prefetch was standing aside, and it is refreshed by the switch.
     if (scope !== state.scope) return
     if (worktree.path === state.active) continue
 
@@ -656,7 +724,9 @@ async function prefetchBadges(): Promise<void> {
       const changes = await call('getChanges', { worktreePath: worktree.path, scope })
       if (scope !== state.scope) return
 
-      worktreeState(worktree.path).changes = changes
+      const entry = worktreeState(worktree.path)
+      entry.changes = changes
+      entry.stale = false
       renderRail()
     } catch {
       // A worktree we cannot read simply keeps no badge; the rail still works.
@@ -670,6 +740,7 @@ async function refreshChanges(worktreePath: string): Promise<void> {
   try {
     entry.changes = await call('getChanges', { worktreePath, scope: state.scope })
     entry.error = undefined
+    entry.stale = false
   } catch (error) {
     entry.error = String(error instanceof Error ? error.message : error)
   } finally {
@@ -692,11 +763,63 @@ async function refreshChanges(worktreePath: string): Promise<void> {
  * jump out from under whoever is reading it.
  */
 async function onFilesChanged(worktreePath: string): Promise<void> {
-  await refreshChanges(worktreePath)
+  // A worktree nobody is looking at is marked stale, not re-read.
+  //
+  // This used to re-scan unconditionally, and the cost is not theoretical: every open
+  // repository an agent happens to be writing in bought a full git scan — several
+  // processes over the whole tree, plus a read of every untracked file — per watcher
+  // batch, forever, for a file list that is not on screen. Measured on this machine while
+  // the window sat idle: one repository alone fired ten of them in forty seconds.
+  //
+  // The scan is deferred to the moment somebody switches to it, which is the only moment
+  // its result can be seen.
+  if (worktreePath !== state.active) {
+    const other = worktreeState(worktreePath)
+    if (!other.stale) {
+      other.stale = true
+      renderRail()
+    }
+    return
+  }
 
+  scheduleActiveRefresh(worktreePath)
+}
+
+/**
+ * Coalesces refreshes of the worktree on screen.
+ *
+ * The active worktree genuinely does have to re-read — showing an agent's change as it
+ * lands is the entire point of the app — but an agent mid-edit produces bursts, and each
+ * notification costs a git scan plus a reload of the open diff. Without coalescing, a run
+ * of writes queues that work several deep and every click the user makes waits behind it.
+ *
+ * Trailing edge, so a burst settles into exactly one refresh once the writing pauses.
+ */
+let activeRefreshTimer: ReturnType<typeof setTimeout> | undefined
+
+const ACTIVE_REFRESH_DEBOUNCE_MS = 250
+
+function scheduleActiveRefresh(worktreePath: string): void {
+  clearTimeout(activeRefreshTimer)
+  activeRefreshTimer = setTimeout(() => {
+    void runActiveRefresh(worktreePath)
+  }, ACTIVE_REFRESH_DEBOUNCE_MS)
+}
+
+async function runActiveRefresh(worktreePath: string): Promise<void> {
+  // The user may have moved on during the debounce, in which case this worktree is now
+  // one of the ones that only needs marking.
+  if (worktreePath !== state.active) {
+    worktreeState(worktreePath).stale = true
+    return
+  }
+
+  await refreshChanges(worktreePath)
   if (worktreePath !== state.active) return
 
   if (isCommitScope()) await refreshCommitPanel()
+  if (worktreePath !== state.active) return
+
   void refreshUndo()
 
   const entry = worktreeState(worktreePath)
@@ -709,6 +832,7 @@ async function onFilesChanged(worktreePath: string): Promise<void> {
 
 async function openFile(path: string, mode?: Mode, side: DiffSide = 'combined'): Promise<void> {
   if (!state.active) return
+  noteInteraction()
 
   const worktreePath = state.active
   const entry = worktreeState(worktreePath)

@@ -2191,3 +2191,10 @@ kbd {
   gap: 5px;
   white-space: nowrap;
 }
+
+/* A count whose rescan was deferred until the worktree is opened. Dimmed rather than
+   hidden: the number is a moment old, not wrong, and blanking it would lose the one
+   signal the rail exists to give. */
+.wt-badge.stale {
+  opacity: 0.5;
+}
