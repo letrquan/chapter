@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace Chapter.Core.Ai;
 
@@ -12,7 +13,7 @@ public enum ApiKeySource
     /// <summary>A key typed into Chapter and encrypted under the user's Windows account.</summary>
     Stored,
 
-    /// <summary><c>ANTHROPIC_API_KEY</c>, inherited from whatever launched the app.</summary>
+    /// <summary>The provider's environment variable, inherited from whatever launched the app.</summary>
     Environment,
 
     /// <summary>An <c>ant auth login</c> profile under the user's config directory.</summary>
@@ -31,34 +32,28 @@ public sealed record ApiKeyState(ApiKeySource Source, string? Hint)
     public bool HasKey => Source is not ApiKeySource.None;
 
     public static readonly ApiKeyState Missing = new(ApiKeySource.None, null);
-
-    /// <summary>How to describe the credential in one phrase.</summary>
-    public string Description => Source switch
-    {
-        ApiKeySource.Stored => $"a key saved in Chapter ({Hint})",
-        ApiKeySource.Environment => $"ANTHROPIC_API_KEY ({Hint})",
-        ApiKeySource.Profile => "your ant auth login profile",
-        _ => "no credential",
-    };
 }
 
 /// <summary>
-/// Holds the Claude API key.
+/// Holds the API keys.
 ///
 /// Deliberately not <c>settings.json</c>. That file is plaintext in <c>%LOCALAPPDATA%</c>,
 /// it is documented as hand-editable, and the app already tells users to open it to
 /// configure editors and commit policies — so anything written there is one screen-share
-/// away from being read aloud. The key lives in its own file, encrypted with DPAPI under
-/// the current user, which ties it to the Windows account rather than to the disk: copying
-/// the file to another machine or another user yields nothing.
+/// away from being read aloud. Keys live in their own file, encrypted with DPAPI under the
+/// current user, which ties them to the Windows account rather than to the disk: copying the
+/// file to another machine or another user yields nothing.
 ///
-/// Three sources, in this order:
+/// One file, keyed by provider, because a Claude key and an OpenAI key are two different
+/// secrets and somebody switching between them should not have to retype either. For each
+/// provider, three sources in this order:
 ///
 /// <list type="number">
 /// <item>a key typed into Chapter — the most explicit statement of intent about *this* app,
 /// so it wins;</item>
-/// <item><c>ANTHROPIC_API_KEY</c>, which most people who already use the API have set;</item>
-/// <item>an <c>ant auth login</c> profile, which the SDK resolves for us.</item>
+/// <item>that provider's environment variable, which most people who already use the API
+/// have set;</item>
+/// <item>for Anthropic only, an <c>ant auth login</c> profile, which the SDK resolves.</item>
 /// </list>
 ///
 /// The order only ever matters when two are present at once, and the UI names the one it
@@ -67,8 +62,11 @@ public sealed record ApiKeyState(ApiKeySource Source, string? Hint)
 /// </summary>
 public sealed class ApiKeyStore
 {
-    /// <summary>The environment variable the official SDK reads, kept identical on purpose.</summary>
-    public const string EnvironmentVariable = "ANTHROPIC_API_KEY";
+    /// <summary>The variable the Anthropic SDK reads, kept identical on purpose.</summary>
+    public const string AnthropicVariable = "ANTHROPIC_API_KEY";
+
+    /// <summary>The variable every OpenAI-compatible client reads, for the same reason.</summary>
+    public const string OpenAiVariable = "OPENAI_API_KEY";
 
     /// <summary>
     /// Bound into the ciphertext as additional entropy, so a blob lifted out of this file
@@ -80,7 +78,7 @@ public sealed class ApiKeyStore
     private readonly Func<string, string?> _environment;
 
     /// <param name="filePath">
-    /// Where the encrypted key lives. Overridable so tests can point at a temp directory
+    /// Where the encrypted keys live. Overridable so tests can point at a temp directory
     /// rather than writing into the user's profile.
     /// </param>
     /// <param name="environment">
@@ -97,18 +95,21 @@ public sealed class ApiKeyStore
     public static string DefaultFilePath =>
         Path.Combine(AppSettings.DirectoryPath, "credentials.dat");
 
+    /// <summary>Which environment variable a provider reads.</summary>
+    public static string EnvironmentVariableFor(string provider) =>
+        provider == "openai" ? OpenAiVariable : AnthropicVariable;
+
     /// <summary>
-    /// The key to authenticate with, or null when the caller should fall back to a profile.
+    /// The key to authenticate with, or null when there is none.
     ///
     /// Returns the secret itself, so it goes straight into a client and nowhere else — never
     /// into the operation log, a bridge payload or an exception message.
     /// </summary>
-    public string? ReadKey()
+    public string? ReadKey(string provider)
     {
-        var stored = ReadStored();
-        if (stored is not null) return stored;
+        if (ReadAll().TryGetValue(provider, out var stored) && stored.Length > 0) return stored;
 
-        var environment = _environment(EnvironmentVariable);
+        var environment = _environment(EnvironmentVariableFor(provider));
         return string.IsNullOrWhiteSpace(environment) ? null : environment.Trim();
     }
 
@@ -117,42 +118,53 @@ public sealed class ApiKeyStore
     /// asks, and it is deliberately a different method from <see cref="ReadKey"/> so a
     /// display path cannot accidentally acquire a key.
     /// </summary>
-    /// <param name="profileAvailable">
-    /// Whether the SDK resolved an <c>ant auth login</c> profile. Passed in rather than
-    /// probed here: resolving one touches the network, and this method is called on every
-    /// repaint of the commit box.
-    /// </param>
-    public ApiKeyState Read(bool profileAvailable = false)
+    public ApiKeyState Read(string provider)
     {
-        var stored = ReadStored();
-        if (stored is not null) return new ApiKeyState(ApiKeySource.Stored, Hint(stored));
+        if (ReadAll().TryGetValue(provider, out var stored) && stored.Length > 0)
+            return new ApiKeyState(ApiKeySource.Stored, Hint(stored));
 
-        var environment = _environment(EnvironmentVariable);
-        if (!string.IsNullOrWhiteSpace(environment))
-            return new ApiKeyState(ApiKeySource.Environment, Hint(environment.Trim()));
+        var environment = _environment(EnvironmentVariableFor(provider));
 
-        return profileAvailable
-            ? new ApiKeyState(ApiKeySource.Profile, null)
-            : ApiKeyState.Missing;
+        return string.IsNullOrWhiteSpace(environment)
+            ? ApiKeyState.Missing
+            : new ApiKeyState(ApiKeySource.Environment, Hint(environment.Trim()));
     }
 
     /// <summary>
-    /// Encrypts a key and writes it. An empty or whitespace value clears the stored key
-    /// instead, which is how the UI offers "forget this key" without a second method.
+    /// Encrypts a key and writes it. An empty or whitespace value forgets that provider's
+    /// key instead, which is how the UI offers "forget this key" without a second method.
     /// </summary>
     /// <returns>Null on success, or one sentence about why it could not be saved.</returns>
-    public string? Store(string key)
+    public string? Store(string provider, string key)
     {
+        var keys = new Dictionary<string, string>(ReadAll(), StringComparer.Ordinal);
         var trimmed = key.Trim();
-        if (trimmed.Length == 0) return Clear();
 
+        if (trimmed.Length == 0) keys.Remove(provider);
+        else keys[provider] = trimmed;
+
+        return Write(keys);
+    }
+
+    /// <summary>Forgets one provider's key. Anything in the environment is not ours to clear.</summary>
+    public string? Clear(string provider) => Store(provider, "");
+
+    private string? Write(Dictionary<string, string> keys)
+    {
         try
         {
+            if (keys.Count == 0)
+            {
+                if (File.Exists(_filePath)) File.Delete(_filePath);
+                return null;
+            }
+
             var directory = Path.GetDirectoryName(_filePath);
             if (directory is not null) Directory.CreateDirectory(directory);
 
             var cipher = ProtectedData.Protect(
-                Encoding.UTF8.GetBytes(trimmed), Entropy, DataProtectionScope.CurrentUser);
+                Encoding.UTF8.GetBytes(JsonSerializer.Serialize(keys)), Entropy,
+                DataProtectionScope.CurrentUser);
 
             // Written through a temp file in the same directory and moved into place, for the
             // same reason WorkingTreeWriter does it: a half-written credentials file is not a
@@ -169,38 +181,40 @@ public sealed class ApiKeyStore
         }
     }
 
-    /// <summary>Removes the stored key. Anything in the environment is not ours to clear.</summary>
-    public string? Clear()
+    /// <summary>
+    /// Every stored key, decrypted.
+    ///
+    /// A file written before this app knew about more than one provider holds a bare key
+    /// rather than a JSON object, so anything that does not parse is read as the Anthropic
+    /// one — which is what it was. Losing somebody's key to a format change would be a poor
+    /// way to introduce a second provider.
+    /// </summary>
+    private Dictionary<string, string> ReadAll()
     {
         try
         {
-            if (File.Exists(_filePath)) File.Delete(_filePath);
-            return null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return $"The key could not be removed: {ex.Message}";
-        }
-    }
-
-    private string? ReadStored()
-    {
-        try
-        {
-            if (!File.Exists(_filePath)) return null;
+            if (!File.Exists(_filePath)) return [];
 
             var plain = ProtectedData.Unprotect(
                 File.ReadAllBytes(_filePath), Entropy, DataProtectionScope.CurrentUser);
 
-            var key = Encoding.UTF8.GetString(plain).Trim();
-            return key.Length == 0 ? null : key;
+            var text = Encoding.UTF8.GetString(plain).Trim();
+            if (text.Length == 0) return [];
+
+            if (text[0] != '{')
+                return new Dictionary<string, string>(StringComparer.Ordinal) { ["anthropic"] = text };
+
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(text) is { } keys
+                ? new Dictionary<string, string>(keys, StringComparer.Ordinal)
+                : [];
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException)
+        catch (Exception ex)
+            when (ex is IOException or UnauthorizedAccessException or CryptographicException or JsonException)
         {
             // A blob written by another Windows account, or a corrupt file. Treat it as
-            // absent rather than throwing: the next source down may well work, and a
+            // absent rather than throwing: the environment may well answer instead, and a
             // credential problem must never be what stops the commit box rendering.
-            return null;
+            return [];
         }
     }
 

@@ -109,6 +109,8 @@ public sealed class AppSettings
             settings.Ai ??= new Ai.AiSettings();
             settings.Ai.Model ??= "claude-opus-5";
             settings.Ai.Effort ??= "low";
+            settings.Ai.Provider ??= "anthropic";
+            settings.Ai.BaseUrl ??= "";
 
             return settings;
         }

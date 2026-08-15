@@ -18,9 +18,33 @@ public sealed class AiSettings
     public bool Enabled { get; set; } = true;
 
     /// <summary>
+    /// Which dialect to speak: <c>"anthropic"</c> or <c>"openai"</c>.
+    ///
+    /// The second means OpenAI-*compatible*, not OpenAI — it is the <c>chat/completions</c>
+    /// shape that Azure, Ollama, LM Studio, vLLM, OpenRouter, Groq and most of the rest
+    /// implement, and <see cref="BaseUrl"/> is what points it somewhere.
+    /// </summary>
+    public string Provider { get; set; } = "anthropic";
+
+    /// <summary>
+    /// Where an OpenAI-compatible endpoint lives, e.g. <c>http://localhost:11434</c>.
+    ///
+    /// Empty means api.openai.com. Setting it also switches off the requirement for a key,
+    /// since the local servers people point this at have no authentication at all. Ignored
+    /// by the Anthropic provider, which has one endpoint.
+    /// </summary>
+    public string BaseUrl { get; set; } = "";
+
+    /// <summary>
     /// Model id, passed to the API verbatim. A string rather than an enum because the list
     /// moves faster than this app ships, and a user who wants a model released last week
     /// should not need a new build.
+    ///
+    /// It has to match the provider — switching to <c>openai</c> and leaving a Claude model
+    /// here gets a "model not found" from the endpoint. Not validated on this side: the
+    /// compatible providers serve every model between them, OpenRouter genuinely serves
+    /// <c>anthropic/claude-*</c> through the OpenAI dialect, and a guess about which names
+    /// are legal would be wrong for somebody.
     /// </summary>
     public string Model { get; set; } = "claude-opus-5";
 

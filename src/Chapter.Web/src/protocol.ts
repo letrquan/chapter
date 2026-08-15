@@ -272,12 +272,23 @@ export interface PatchLineSelection {
 /** Where the credential in use came from. `none` means generation is unavailable. */
 export type ApiKeySource = 'none' | 'stored' | 'environment' | 'profile'
 
+/**
+ * Which dialect the backend is speaking. `openai` means OpenAI-*compatible* — the
+ * chat/completions shape that Azure, Ollama, LM Studio, vLLM and OpenRouter also implement.
+ */
+export type AiProvider = 'anthropic' | 'openai'
+
 export interface AiAvailability {
   available: boolean
   /** Why not, in one sentence. Null when it is. */
   reason: string | null
   /** The one reason the user can fix from inside the app, so it gets its own affordance. */
   needsKey: boolean
+  provider: AiProvider
+  /** Where an OpenAI-compatible provider points, when it is not the default. */
+  baseUrl: string | null
+  /** The variable this provider reads, so the key prompt names the right one. */
+  environmentVariable: string
   source: ApiKeySource
   /** The last few characters of the key, for telling two accounts apart. Never the key. */
   hint: string | null

@@ -19,6 +19,11 @@
     <!-- DPAPI, for the API key. Not in the framework since .NET Core, and the alternative is
          either plaintext or hand-rolled crypto. -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
+
+    <!-- The OpenAI-compatible provider streams with System.Net.ServerSentEvents, which needs
+         no reference: it is part of the framework from .NET 10, and adding one only earns an
+         NU1510 saying so. -->
+
   </ItemGroup>
 
   <ItemGroup>

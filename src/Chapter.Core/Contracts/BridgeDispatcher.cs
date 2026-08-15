@@ -457,7 +457,9 @@ public sealed class BridgeDispatcher
     /// </summary>
     private object SetApiKey(ApiKeyRequest req)
     {
-        var error = Keys.Store(req.Key);
+        // Stored against whichever provider is configured. The prompt that collected it named
+        // that provider's environment variable, so this is the one it is for.
+        var error = Keys.Store(CommitMessageGenerator.NormaliseProvider(Settings.Ai.Provider), req.Key);
 
         return new ApiKeyPayload
         {

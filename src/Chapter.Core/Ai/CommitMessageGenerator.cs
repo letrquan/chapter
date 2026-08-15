@@ -1,11 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
-using Anthropic;
-using Anthropic.Core;
 using Anthropic.Credentials;
 using Anthropic.Exceptions;
-using Anthropic.Models.Messages;
+using Chapter.Core.Ai.Providers;
 using Chapter.Core.Diagnostics;
 using Chapter.Core.Git;
 
@@ -24,6 +22,15 @@ public sealed record AiAvailability
     /// can fix from inside the app and the UI offers a different affordance for it.
     /// </summary>
     public bool NeedsKey { get; init; }
+
+    /// <summary>"anthropic" or "openai" — which dialect is being spoken.</summary>
+    public required string Provider { get; init; }
+
+    /// <summary>Where an OpenAI-compatible provider is pointed, when it is not the default.</summary>
+    public string? BaseUrl { get; init; }
+
+    /// <summary>The environment variable this provider reads, so the key prompt names the right one.</summary>
+    public required string EnvironmentVariable { get; init; }
 
     public required string Source { get; init; }
     public string? Hint { get; init; }
@@ -57,13 +64,19 @@ public sealed record GenerationResult
 }
 
 /// <summary>
-/// Writes commit messages with Claude.
+/// Writes commit messages with a model.
 ///
 /// Everything here is arranged around one fact: this is the first thing the app does that
 /// leaves the machine. So it says what it sent (the operation log records every call), it
 /// says what it cost, it says when it could not see the whole diff, and it never becomes the
 /// reason a commit cannot happen — every failure path ends with the message box exactly as
 /// usable as it was before the button was pressed.
+///
+/// Which model is somebody else's business. This class assembles a
+/// <see cref="ModelRequest"/> and reads a <see cref="ModelOutcome"/>; a
+/// <see cref="IMessageProvider"/> knows the wire. Two exist — Anthropic's own API, and the
+/// OpenAI-compatible dialect that Azure, Ollama, LM Studio, vLLM, OpenRouter and most of the
+/// rest speak — and nothing above the seam is written twice for them.
 ///
 /// Generation is started rather than awaited. The bridge is request/response with a sixty
 /// second ceiling, and a model call is the first thing in this app that can legitimately take
@@ -87,6 +100,12 @@ public sealed class CommitMessageGenerator
 
     private bool _profileResolved;
 
+    /// <summary>
+    /// Overridable so tests can drive the OpenAI-compatible wire without a network. Null uses
+    /// an ordinary handler, which is every real run.
+    /// </summary>
+    internal Func<HttpMessageHandler>? HttpHandlerFactory { get; set; }
+
     public CommitMessageGenerator(GitCli git, AppSettings settings, ApiKeyStore keys, OperationLog log)
     {
         _git = git;
@@ -101,6 +120,10 @@ public sealed class CommitMessageGenerator
     /// <summary>Fired exactly once per generation, success or failure.</summary>
     public event Action<GenerationResult>? Finished;
 
+    // -----------------------------------------------------------------------
+    // Availability
+    // -----------------------------------------------------------------------
+
     /// <summary>
     /// Whether the feature can run, without doing anything that costs money.
     ///
@@ -111,6 +134,8 @@ public sealed class CommitMessageGenerator
     public AiAvailability Describe()
     {
         var ai = _settings.Ai;
+        var provider = NormaliseProvider(ai.Provider);
+        var variable = ApiKeyStore.EnvironmentVariableFor(provider);
 
         // Answered before anything is read. A feature that is switched off has no business
         // opening credential files or exchanging a token to find out how switched off it is.
@@ -120,17 +145,21 @@ public sealed class CommitMessageGenerator
             {
                 Available = false,
                 Reason = "Message generation is switched off in settings.json.",
+                Provider = provider,
+                BaseUrl = Blank(ai.BaseUrl),
+                EnvironmentVariable = variable,
                 Source = "none",
                 Model = ai.Model,
                 Effort = ai.Effort,
             };
         }
 
-        // Cheap sources first. Resolving a login profile is the expensive one and is only
-        // worth doing when neither of the others answered.
-        var state = _keys.Read();
+        var state = _keys.Read(provider);
 
-        if (!state.HasKey && ResolveProfile() is not null)
+        // A login profile is Anthropic's own, and resolving one costs a file read and possibly
+        // a token exchange. Asking for it while pointed at an OpenAI-compatible endpoint would
+        // report the feature available on a credential the request cannot use.
+        if (!state.HasKey && provider == "anthropic" && ResolveProfile() is not null)
             state = new ApiKeyState(ApiKeySource.Profile, null);
 
         var source = state.Source switch
@@ -141,19 +170,44 @@ public sealed class CommitMessageGenerator
             _ => "none",
         };
 
+        // The case this whole provider split exists for. Ollama and LM Studio are the reason
+        // people ask for an OpenAI-compatible client, and neither has authentication at all —
+        // so demanding a key from somebody who pointed the app at localhost would refuse
+        // exactly the users the feature was widened for. A base URL is the signal: nobody sets
+        // one to reach api.openai.com.
+        var local = provider == "openai" && Blank(ai.BaseUrl) is not null;
+
+        var available = state.HasKey || local;
+
         return new AiAvailability
         {
-            Available = state.HasKey,
-            NeedsKey = !state.HasKey,
-            Reason = state.HasKey
+            Available = available,
+            NeedsKey = !available,
+            Reason = available
                 ? null
-                : "Chapter has no Claude API key. Add one to write commit messages here.",
-            Source = source,
+                : $"Chapter has no API key for {Label(provider)}. Add one to write commit messages here.",
+            Provider = provider,
+            BaseUrl = Blank(ai.BaseUrl),
+            EnvironmentVariable = variable,
+            Source = local && !state.HasKey ? "none" : source,
             Hint = state.Hint,
             Model = ai.Model,
             Effort = ai.Effort,
         };
     }
+
+    /// <summary>Unknown values fall back rather than failing — settings.json is hand-edited.</summary>
+    internal static string NormaliseProvider(string? provider) =>
+        string.Equals(provider, "openai", StringComparison.OrdinalIgnoreCase) ? "openai" : "anthropic";
+
+    private static string Label(string provider) => provider == "openai" ? "this OpenAI-compatible endpoint" : "Claude";
+
+    private static string? Blank(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    // -----------------------------------------------------------------------
+    // Running one
+    // -----------------------------------------------------------------------
 
     /// <summary>
     /// Starts a generation and returns its id immediately.
@@ -243,10 +297,9 @@ public sealed class CommitMessageGenerator
         var ai = _settings.Ai;
         var stopwatch = Stopwatch.StartNew();
 
-        var client = CreateClient();
-        if (client is null) return Failure(id, worktreePath, Describe().Reason ?? "No credential is configured.");
-
-        using var owned = client;
+        using var provider = CreateProvider();
+        if (provider is null)
+            return Failure(id, worktreePath, Describe().Reason ?? "No credential is configured.");
 
         // An amend describes the commit that will exist afterwards, which is the index against
         // the replaced commit's parent. Reading against HEAD would describe only what has been
@@ -261,7 +314,7 @@ public sealed class CommitMessageGenerator
 
         // Four characters to the token is a deliberate over-estimate for source code, which
         // tokenises worse than prose. It only sets the first attempt; the count that decides
-        // anything comes from the API below.
+        // anything comes from the provider below.
         var digest = await DiffDigestBuilder
             .ReadAsync(_git, worktreePath, ai.InputTokenBudget * 4, baseRef, ct: ct)
             .ConfigureAwait(false);
@@ -273,13 +326,13 @@ public sealed class CommitMessageGenerator
                 : "Nothing is staged, so there is nothing to describe.");
         }
 
-        var system = BuildSystem(policy, recent);
-        var parameters = BuildRequest(ai, system, digest, policy, count);
+        var request = BuildRequest(ai, policy, recent, digest, count);
 
-        // Measured with the API's own counter, never estimated. A tokeniser borrowed from
-        // another model family is wrong for this one by enough to matter, and the point of
-        // the budget is to be right about the request that is actually about to be sent.
-        var counted = await CountAsync(owned, parameters, system, ct).ConfigureAwait(false);
+        // Measured by whoever is about to be sent to, never estimated where it can be asked.
+        // A tokeniser borrowed from another model family is wrong for this one by enough to
+        // matter, and the point of the budget is to be right about the request that is
+        // actually going out.
+        var counted = await provider.CountTokensAsync(request, ct).ConfigureAwait(false);
 
         if (counted > ai.InputTokenBudget)
         {
@@ -291,12 +344,14 @@ public sealed class CommitMessageGenerator
                 .ReadAsync(_git, worktreePath, scaled, baseRef, ct: ct)
                 .ConfigureAwait(false);
 
-            parameters = BuildRequest(ai, system, digest, policy, count);
+            request = BuildRequest(ai, policy, recent, digest, count);
         }
 
-        var outcome = count <= 1
-            ? await StreamAsync(owned, id, worktreePath, parameters, ct).ConfigureAwait(false)
-            : await OnceAsync(owned, parameters, ct).ConfigureAwait(false);
+        // Streaming only for a single message. Three arriving a character at a time in three
+        // boxes is not something anybody watches.
+        var onProgress = count <= 1 ? Throttled(id, worktreePath) : null;
+
+        var outcome = await provider.CompleteAsync(request, onProgress, ct).ConfigureAwait(false);
 
         stopwatch.Stop();
 
@@ -304,7 +359,7 @@ public sealed class CommitMessageGenerator
             ai.Model, outcome.InputTokens, outcome.OutputTokens,
             outcome.CacheReadTokens, outcome.CacheWriteTokens);
 
-        LogGeneration(worktreePath, ai.Model, outcome, cost, stopwatch.ElapsedMilliseconds, digest);
+        LogGeneration(worktreePath, provider, ai.Model, outcome, cost, stopwatch.ElapsedMilliseconds, digest);
 
         if (outcome.Refused)
         {
@@ -313,7 +368,7 @@ public sealed class CommitMessageGenerator
                 Id = id,
                 WorktreePath = worktreePath,
                 Ok = false,
-                Error = "Claude declined to write a message for this change. Write one yourself.",
+                Error = "The model declined to write a message for this change. Write one yourself.",
                 Cost = cost,
             };
         }
@@ -329,7 +384,7 @@ public sealed class CommitMessageGenerator
                 Ok = false,
                 Error = outcome.Truncated
                     ? "The reply was cut off before a message was finished. Try again, or raise maxTokens."
-                    : "Claude replied with something that was not a commit message.",
+                    : "The model replied with something that was not a commit message.",
                 Cost = cost,
             };
         }
@@ -351,53 +406,129 @@ public sealed class CommitMessageGenerator
         };
     }
 
+    /// <summary>
+    /// Wraps the progress callback so the UI is not repainted per token.
+    ///
+    /// A token-by-token event stream would repaint the message box several hundred times for
+    /// one short message. Fifty milliseconds still reads as continuous typing, and identical
+    /// snapshots are dropped as well — most fragments land inside JSON punctuation and change
+    /// nothing a user can see.
+    /// </summary>
+    private Action<string> Throttled(string id, string worktreePath)
+    {
+        var clock = Stopwatch.StartNew();
+        var lastSentAt = 0L;
+        var lastSent = "";
+
+        return accumulated =>
+        {
+            if (clock.ElapsedMilliseconds - lastSentAt < 50) return;
+            lastSentAt = clock.ElapsedMilliseconds;
+
+            var partial = Partial(accumulated);
+            if (partial == lastSent) return;
+
+            lastSent = partial;
+            Report(new GenerationProgress(id, worktreePath, partial));
+        };
+    }
+
+    /// <summary>The message as far as it has arrived, assembled from incomplete JSON.</summary>
+    private static string Partial(string json)
+    {
+        var subject = PartialJson.ReadString(json, "subject");
+        if (subject is null) return "";
+
+        return new GeneratedMessage
+        {
+            Type = PartialJson.ReadString(json, "type"),
+            Scope = PartialJson.ReadString(json, "scope"),
+            Subject = subject,
+            Body = PartialJson.ReadString(json, "body") ?? "",
+        }.Message;
+    }
+
     // -----------------------------------------------------------------------
     // The request
     // -----------------------------------------------------------------------
 
-    /// <summary>
-    /// The system prompt, in two blocks.
-    ///
-    /// The split is what makes caching work. The first block is the same for every repository
-    /// and every call; the second changes only when the repository's conventions or its recent
-    /// history change. Marking the end of the second as the cache breakpoint means a
-    /// regenerate — the button people press most — re-reads both at a tenth of the input price
-    /// instead of paying for them again, and the diff, which is different every time, stays
-    /// after the breakpoint where it belongs.
-    ///
-    /// A prefix shorter than the model's minimum is simply not cached; the API does not
-    /// complain, and there is nothing to detect or work around.
-    /// </summary>
-    private static List<TextBlockParam> BuildSystem(
-        CommitMessagePolicy policy, IReadOnlyList<string> recentSubjects)
+    private static ModelRequest BuildRequest(
+        AiSettings ai,
+        CommitMessagePolicy policy,
+        IReadOnlyList<string> recentSubjects,
+        DiffDigest digest,
+        int count)
     {
-        const string instructions = """
-            You write git commit messages. You are shown the staged diff of one change and you
-            describe it, in the voice the repository already uses.
+        var ask = count <= 1
+            ? "Write the commit message for this change."
+            : $"Write {count} commit messages for this change — genuinely different framings, "
+              + "not rewordings of one another. Best first.";
 
-            How to write the subject:
-            - Imperative mood, as if completing "this commit will …": "add", never "added" or
-              "adds".
-            - Say what the change does and, where it is not obvious, what it is for. Never
-              restate the diff — "update Parser.cs" tells a reader nothing they could not see.
-            - No trailing full stop. No issue numbers unless the repository's own subjects
-              carry them.
+        var effort = ParseEffort(ai.Effort);
 
-            How to write the body:
-            - Only when there is something to say that the subject cannot hold: why this
-              approach, what it replaces, what a reader would otherwise be surprised by.
-            - Wrapped at 72 columns, blank line between paragraphs.
-            - An empty string is the right answer for a small, self-evident change. Padding a
-              trivial commit with three paragraphs is worse than saying nothing.
+        // Deliberation is the user's to ask for. Below these two levels the provider is told
+        // to suppress reasoning where it can: the diff is already in front of the model and
+        // the answer is one sentence.
+        var deliberate = effort is ModelEffort.Xhigh or ModelEffort.Max;
 
-            What not to do:
-            - Do not describe files you were not shown the patch for. Where the diff is marked
-              incomplete, describe the change at the level the file list supports and no
-              further.
-            - Do not invent a motive. If the diff does not say why, the subject says what.
-            - Do not mention Claude, this tool, or that the message was generated.
-            """;
+        var perMessage = deliberate ? Math.Max(ai.MaxTokens, 4096) : ai.MaxTokens;
 
+        return new ModelRequest
+        {
+            Model = ai.Model,
+            Instructions = Instructions,
+            Conventions = BuildConventions(policy, recentSubjects),
+            UserMessage = $"{ask}\n\n{digest.ToPrompt()}",
+            Schema = GeneratedMessage.Schema(policy, count),
+            // Deliberately small. A commit message is short by definition, and this is one of
+            // the few places where a low ceiling is a statement about the task rather than
+            // about the budget. Several alternatives need proportionally more room.
+            MaxTokens = count <= 1 ? perMessage : perMessage * Math.Min(count, 4),
+            Effort = effort,
+            Deliberate = deliberate,
+        };
+    }
+
+    internal static ModelEffort ParseEffort(string value) =>
+        Enum.TryParse<ModelEffort>(value, ignoreCase: true, out var effort) ? effort : ModelEffort.Low;
+
+    /// <summary>
+    /// How to write a commit message. Identical for every repository and every call, which is
+    /// what lets a provider with prompt caching keep it in a cached prefix.
+    /// </summary>
+    private const string Instructions = """
+        You write git commit messages. You are shown the staged diff of one change and you
+        describe it, in the voice the repository already uses.
+
+        How to write the subject:
+        - Imperative mood, as if completing "this commit will …": "add", never "added" or
+          "adds".
+        - Say what the change does and, where it is not obvious, what it is for. Never
+          restate the diff — "update Parser.cs" tells a reader nothing they could not see.
+        - No trailing full stop. No issue numbers unless the repository's own subjects
+          carry them.
+
+        How to write the body:
+        - Only when there is something to say that the subject cannot hold: why this
+          approach, what it replaces, what a reader would otherwise be surprised by.
+        - Wrapped at 72 columns, blank line between paragraphs.
+        - An empty string is the right answer for a small, self-evident change. Padding a
+          trivial commit with three paragraphs is worse than saying nothing.
+
+        What not to do:
+        - Do not describe files you were not shown the patch for. Where the diff is marked
+          incomplete, describe the change at the level the file list supports and no
+          further.
+        - Do not invent a motive. If the diff does not say why, the subject says what.
+        - Do not mention the model, this tool, or that the message was generated.
+        """;
+
+    /// <summary>
+    /// This repository's rules and its recent subjects. Stable for as long as the repository
+    /// is, which is what makes regenerating nearly free where caching exists.
+    /// </summary>
+    private static string BuildConventions(CommitMessagePolicy policy, IReadOnlyList<string> recentSubjects)
+    {
         var conventions = new StringBuilder();
         conventions.Append("This repository's conventions.\n\n");
 
@@ -430,245 +561,7 @@ public sealed class CommitMessageGenerator
                 + "are the house style; your message should be indistinguishable from them.\n");
         }
 
-        return
-        [
-            new TextBlockParam(instructions),
-            new TextBlockParam(conventions.ToString())
-            {
-                // The breakpoint. Everything above it is stable for the session; the diff,
-                // which follows in the user message, is not and must stay outside.
-                CacheControl = new CacheControlEphemeral(),
-            },
-        ];
-    }
-
-    private static MessageCreateParams BuildRequest(
-        AiSettings ai,
-        List<TextBlockParam> system,
-        DiffDigest digest,
-        CommitMessagePolicy policy,
-        int count)
-    {
-        var ask = count <= 1
-            ? "Write the commit message for this change."
-            : $"Write {count} commit messages for this change — genuinely different framings, "
-              + "not rewordings of one another. Best first.";
-
-        var effort = ParseEffort(ai.Effort);
-
-        // Thinking is off at the effort levels this app is built around, and that is what
-        // makes the small ceiling below safe. Left unset, a current model thinks adaptively,
-        // and thinking counts against `max_tokens` — so 1024 would be spent reasoning about a
-        // one-sentence answer and the JSON would arrive cut in half, reported to the user as
-        // "the reply was cut off". The comment on Effort has always said thinking buys
-        // nothing here; this is the line that makes it true.
-        //
-        // Above `high` the request is left alone instead: somebody who set `max` effort for a
-        // commit message asked for deliberation, and the right response is to give the reply
-        // room for it rather than to overrule them.
-        var deliberates = effort is Effort.Xhigh or Effort.Max;
-
-        var perMessage = deliberates ? Math.Max(ai.MaxTokens, 4096) : ai.MaxTokens;
-
-        return new MessageCreateParams
-        {
-            Model = ai.Model,
-            // Deliberately small. A commit message is short by definition, and this is one of
-            // the few places where a low ceiling is a statement about the task rather than
-            // about the budget. Several alternatives need proportionally more room.
-            MaxTokens = count <= 1 ? perMessage : perMessage * Math.Min(count, 4),
-            Thinking = deliberates ? null : new ThinkingConfigParam(new ThinkingConfigDisabled()),
-            System = new MessageCreateParamsSystem(system),
-            Messages =
-            [
-                new()
-                {
-                    Role = Role.User,
-                    Content = $"{ask}\n\n{digest.ToPrompt()}",
-                },
-            ],
-            OutputConfig = new OutputConfig
-            {
-                // Low is genuinely right here rather than merely cheap: the diff is already in
-                // front of the model and the answer is one sentence. Extended thinking buys
-                // nothing and delays a button the user is watching — see Thinking above, which
-                // is where that is actually enforced.
-                Effort = effort,
-
-                // Structured, so conventional-commit conformance is a property of the response
-                // rather than something to check for afterwards with a regular expression.
-                Format = new JsonOutputFormat { Schema = GeneratedMessage.Schema(policy, count) },
-            },
-        };
-    }
-
-    internal static Effort ParseEffort(string value) =>
-        Enum.TryParse<Effort>(value, ignoreCase: true, out var effort) ? effort : Effort.Low;
-
-    // -----------------------------------------------------------------------
-    // Talking to the API
-    // -----------------------------------------------------------------------
-
-    /// <summary>Whatever came back, in the terms the caller acts on.</summary>
-    private sealed record Outcome
-    {
-        public string Text { get; init; } = "";
-        public bool Refused { get; init; }
-        public bool Truncated { get; init; }
-        public long InputTokens { get; init; }
-        public long OutputTokens { get; init; }
-        public long CacheReadTokens { get; init; }
-        public long CacheWriteTokens { get; init; }
-    }
-
-    /// <summary>
-    /// Streams one message, lifting the subject and body out of the JSON as it arrives.
-    ///
-    /// The extraction is cosmetic — its only job is that the box fills instead of freezing —
-    /// and the complete text is parsed properly once the stream ends. A structured response
-    /// arrives either as text deltas or as input-JSON deltas depending on how the model
-    /// serves it; both carry fragments of the same JSON, so both go into the same buffer and
-    /// the difference stops mattering.
-    /// </summary>
-    private async Task<Outcome> StreamAsync(
-        AnthropicClient client, string id, string worktreePath, MessageCreateParams parameters,
-        CancellationToken ct)
-    {
-        var buffer = new StringBuilder();
-
-        long inputTokens = 0, outputTokens = 0, cacheRead = 0, cacheWrite = 0;
-        var refused = false;
-        var truncated = false;
-
-        var lastSent = "";
-        var lastSentAt = 0L;
-        var clock = Stopwatch.StartNew();
-
-        await foreach (var evt in client.Messages.CreateStreaming(parameters, ct).ConfigureAwait(false))
-        {
-            if (evt.TryPickStart(out var start))
-            {
-                var usage = start.Message.Usage;
-                inputTokens = usage.InputTokens;
-                cacheRead = usage.CacheReadInputTokens ?? 0;
-                cacheWrite = usage.CacheCreationInputTokens ?? 0;
-                continue;
-            }
-
-            if (evt.TryPickDelta(out var messageDelta))
-            {
-                outputTokens = messageDelta.Usage.OutputTokens;
-
-                var stop = messageDelta.Delta.StopReason?.Value();
-                refused = stop is StopReason.Refusal;
-                truncated = stop is StopReason.MaxTokens;
-                continue;
-            }
-
-            if (!evt.TryPickContentBlockDelta(out var blockDelta)) continue;
-
-            if (blockDelta.Delta.TryPickText(out var text)) buffer.Append(text.Text);
-            else if (blockDelta.Delta.TryPickInputJson(out var json)) buffer.Append(json.PartialJson);
-            else continue;
-
-            // Throttled, because a token-by-token event stream would repaint the message box
-            // several hundred times for one short message. Fifty milliseconds still reads as
-            // continuous typing.
-            if (clock.ElapsedMilliseconds - lastSentAt < 50) continue;
-            lastSentAt = clock.ElapsedMilliseconds;
-
-            var partial = Partial(buffer.ToString());
-            if (partial == lastSent) continue;
-
-            lastSent = partial;
-            Report(new GenerationProgress(id, worktreePath, partial));
-        }
-
-        return new Outcome
-        {
-            Text = buffer.ToString(),
-            Refused = refused,
-            Truncated = truncated,
-            InputTokens = inputTokens,
-            OutputTokens = outputTokens,
-            CacheReadTokens = cacheRead,
-            CacheWriteTokens = cacheWrite,
-        };
-    }
-
-    /// <summary>The message as far as it has arrived, assembled from incomplete JSON.</summary>
-    private static string Partial(string json)
-    {
-        var subject = PartialJson.ReadString(json, "subject");
-        if (subject is null) return "";
-
-        var type = PartialJson.ReadString(json, "type");
-        var scope = PartialJson.ReadString(json, "scope");
-        var body = PartialJson.ReadString(json, "body");
-
-        return new GeneratedMessage
-        {
-            Type = type,
-            Scope = scope,
-            Subject = subject,
-            Body = body ?? "",
-        }.Message;
-    }
-
-    private static async Task<Outcome> OnceAsync(
-        AnthropicClient client, MessageCreateParams parameters, CancellationToken ct)
-    {
-        var message = await client.Messages.Create(parameters, ct).ConfigureAwait(false);
-
-        var text = new StringBuilder();
-        foreach (var block in message.Content)
-        {
-            if (block.TryPickText(out var t)) text.Append(t.Text);
-        }
-
-        var stop = message.StopReason?.Value();
-
-        return new Outcome
-        {
-            Text = text.ToString(),
-            Refused = stop is StopReason.Refusal,
-            Truncated = stop is StopReason.MaxTokens,
-            InputTokens = message.Usage.InputTokens,
-            OutputTokens = message.Usage.OutputTokens,
-            CacheReadTokens = message.Usage.CacheReadInputTokens ?? 0,
-            CacheWriteTokens = message.Usage.CacheCreationInputTokens ?? 0,
-        };
-    }
-
-    /// <summary>
-    /// Measures the request before sending it.
-    ///
-    /// Falls back to a character estimate when the count cannot be taken — being offline is
-    /// about to fail the generation anyway, and a network error raised from the measuring step
-    /// would report the wrong cause.
-    /// </summary>
-    private static async Task<int> CountAsync(
-        AnthropicClient client, MessageCreateParams parameters, List<TextBlockParam> system,
-        CancellationToken ct)
-    {
-        try
-        {
-            var count = await client.Messages.CountTokens(new MessageCountTokensParams
-            {
-                Model = parameters.Model,
-                Messages = parameters.Messages,
-                System = new MessageCountTokensParamsSystem(system),
-            }, ct).ConfigureAwait(false);
-
-            return (int)Math.Min(int.MaxValue, count.InputTokens);
-        }
-        catch (Exception ex) when (ex is AnthropicException or HttpRequestException or TaskCanceledException)
-        {
-            var characters = parameters.Messages.Sum(m =>
-                m.Content.Value is string text ? text.Length : 0);
-
-            return characters / 4;
-        }
+        return conventions.ToString();
     }
 
     // -----------------------------------------------------------------------
@@ -676,33 +569,24 @@ public sealed class CommitMessageGenerator
     // -----------------------------------------------------------------------
 
     /// <summary>
-    /// Builds a client for whichever credential is configured, or null when none is.
+    /// Builds the provider the settings ask for, or null when nothing can authenticate.
     ///
-    /// The timeout is the app's, not the SDK's default: a commit message that has not arrived
-    /// in ninety seconds is not going to, and the user is watching a button.
+    /// One per generation rather than one per app, so a key stored or a provider switched
+    /// while the window is open takes effect on the next press rather than the next restart.
     /// </summary>
-    private AnthropicClient? CreateClient()
+    private IMessageProvider? CreateProvider()
     {
-        var options = new ClientOptions
+        var ai = _settings.Ai;
+        var provider = NormaliseProvider(ai.Provider);
+        var key = _keys.ReadKey(provider);
+
+        if (provider == "openai")
         {
-            Timeout = TimeSpan.FromSeconds(90),
-            MaxRetries = 2,
-        };
+            return OpenAiProvider.TryCreate(
+                key, Blank(ai.BaseUrl), HttpHandlerFactory?.Invoke());
+        }
 
-        var key = _keys.ReadKey();
-        if (key is not null) return new AnthropicClient(options with { ApiKey = key });
-
-        var profile = ResolveProfile();
-        if (profile is null) return null;
-
-        options = options with { Credentials = profile.Credentials };
-
-        // Both are optional on a resolved profile, and assigning null would overwrite the
-        // SDK's own defaults with nothing rather than leaving them alone.
-        if (profile.ExtraHeaders is not null) options = options with { ExtraHeaders = profile.ExtraHeaders };
-        if (profile.BaseUrl is not null) options = options with { BaseUrl = profile.BaseUrl };
-
-        return new AnthropicClient(options);
+        return AnthropicProvider.TryCreate(key, key is null ? ResolveProfile() : null);
     }
 
     /// <summary>
@@ -775,11 +659,12 @@ public sealed class CommitMessageGenerator
     /// The log exists to answer "what did this app just do to my repository", and sending the
     /// staged diff to an API is squarely that — arguably more so than a git command, since it
     /// is the only thing the app does that leaves the machine. The command line names the
-    /// model and the endpoint; the detail carries what it cost.
+    /// provider and the model; the detail carries what it cost, and anything the provider had
+    /// to give up on to get an answer at all.
     /// </summary>
     private void LogGeneration(
-        string worktreePath, string model, Outcome outcome, GenerationCost cost, long elapsedMs,
-        DiffDigest digest)
+        string worktreePath, IMessageProvider provider, string model, ModelOutcome outcome,
+        GenerationCost cost, long elapsedMs, DiffDigest digest)
     {
         var sent = digest.Files.Count(f => f.State is not DiffFileState.Summarised);
 
@@ -792,6 +677,11 @@ public sealed class CommitMessageGenerator
         detail.Append("; sent ").Append(sent).Append(" of ").Append(digest.Files.Count)
             .Append(digest.Files.Count == 1 ? " file's patch" : " files' patches");
 
+        // Said out loud rather than swallowed. A message written without a schema, because the
+        // endpoint would not take one, is a different thing from one written with it — and the
+        // only place that difference is recoverable afterwards is here.
+        foreach (var concession in outcome.Concessions) detail.Append("; ").Append(concession);
+
         if (outcome.Refused) detail.Append("; declined");
 
         _log.Append(new OperationLogEntry
@@ -799,7 +689,7 @@ public sealed class CommitMessageGenerator
             Timestamp = DateTimeOffset.Now,
             Operation = "generate message",
             WorktreePath = worktreePath,
-            CommandLine = $"anthropic messages.create {model}",
+            CommandLine = $"{provider.Id} {model}",
             ExitCode = outcome.Refused ? 1 : 0,
             ElapsedMs = elapsedMs,
             Detail = detail.ToString(),
@@ -819,7 +709,9 @@ public sealed class CommitMessageGenerator
     /// Turns an exception into one sentence a user can act on.
     ///
     /// Every branch ends the same way in practice — the message box is still there and still
-    /// works — so these say what to do rather than what went wrong internally.
+    /// works — so these say what to do rather than what went wrong internally. The two
+    /// providers raise different exception types for the same handful of situations, so both
+    /// families are mapped onto the same sentences.
     /// </summary>
     private static string Describe(Exception ex) => ex switch
     {
@@ -841,8 +733,15 @@ public sealed class CommitMessageGenerator
         Anthropic5xxException =>
             "The API is having trouble. Try again shortly.",
 
-        AnthropicIOException or HttpRequestException =>
+        AnthropicIOException =>
             "Could not reach the API. Write the message yourself, or try again when you are back online.",
+
+        // The OpenAI-compatible provider's own, which carries the status and the endpoint's
+        // own words — those are more useful than anything this app could infer.
+        ProviderException provider => provider.Message,
+
+        HttpRequestException =>
+            "Could not reach the endpoint. Write the message yourself, or try again when you are back online.",
 
         TaskCanceledException or TimeoutException =>
             "The request took too long and was given up on.",
