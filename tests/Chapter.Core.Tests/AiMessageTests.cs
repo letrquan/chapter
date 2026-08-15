@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Chapter.Core.Ai;
+using Chapter.Core.Ai.Providers;
 using Chapter.Core.Git;
 
 namespace Chapter.Core.Tests;
@@ -605,14 +606,35 @@ public class GenerationCostTests
     }
 
     [Theory]
-    [InlineData("low", Anthropic.Models.Messages.Effort.Low)]
-    [InlineData("HIGH", Anthropic.Models.Messages.Effort.High)]
-    [InlineData("xhigh", Anthropic.Models.Messages.Effort.Xhigh)]
-    [InlineData("", Anthropic.Models.Messages.Effort.Low)]
-    [InlineData("enthusiastic", Anthropic.Models.Messages.Effort.Low)]
+    [InlineData("low", ModelEffort.Low)]
+    [InlineData("HIGH", ModelEffort.High)]
+    [InlineData("xhigh", ModelEffort.Xhigh)]
+    [InlineData("", ModelEffort.Low)]
+    [InlineData("enthusiastic", ModelEffort.Low)]
     public void Effort_falls_back_rather_than_failing_on_a_hand_edited_value(
-        string value, Anthropic.Models.Messages.Effort expected) =>
+        string value, ModelEffort expected) =>
         Assert.Equal(expected, CommitMessageGenerator.ParseEffort(value));
+
+    [Fact]
+    public void Every_effort_level_maps_onto_the_anthropic_one_of_the_same_name()
+    {
+        // The seam carries this app's five levels; each provider maps them onto whatever it
+        // has. A silent fallback to Low here would make the setting look like it works.
+        Assert.Equal(Anthropic.Models.Messages.Effort.Low, AnthropicProvider.Map(ModelEffort.Low));
+        Assert.Equal(Anthropic.Models.Messages.Effort.Medium, AnthropicProvider.Map(ModelEffort.Medium));
+        Assert.Equal(Anthropic.Models.Messages.Effort.High, AnthropicProvider.Map(ModelEffort.High));
+        Assert.Equal(Anthropic.Models.Messages.Effort.Xhigh, AnthropicProvider.Map(ModelEffort.Xhigh));
+        Assert.Equal(Anthropic.Models.Messages.Effort.Max, AnthropicProvider.Map(ModelEffort.Max));
+    }
+
+    [Theory]
+    [InlineData("openai", "openai")]
+    [InlineData("OpenAI", "openai")]
+    [InlineData("anthropic", "anthropic")]
+    [InlineData("", "anthropic")]
+    [InlineData("ollama", "anthropic")]
+    public void An_unknown_provider_falls_back_rather_than_failing(string value, string expected) =>
+        Assert.Equal(expected, CommitMessageGenerator.NormaliseProvider(value));
 }
 
 /// <summary>
@@ -624,8 +646,18 @@ public class ApiKeyStoreTests : IDisposable
     private readonly string _file = Path.Combine(
         Path.GetTempPath(), "chapter-key-" + Guid.NewGuid().ToString("N")[..8] + ".dat");
 
+    private const string Anthropic = "anthropic";
+    private const string OpenAi = "openai";
+
+    /// <param name="environment">
+    /// What every variable reads as. A dictionary is used where the two providers' variables
+    /// have to differ.
+    /// </param>
     private ApiKeyStore Store(string? environment = null) =>
         new(_file, _ => environment);
+
+    private ApiKeyStore Store(Dictionary<string, string?> environment) =>
+        new(_file, name => environment.GetValueOrDefault(name));
 
     public void Dispose()
     {
@@ -646,8 +678,8 @@ public class ApiKeyStoreTests : IDisposable
     {
         var store = Store();
 
-        Assert.Null(store.Store("sk-ant-api03-not-a-real-key-0000"));
-        Assert.Equal("sk-ant-api03-not-a-real-key-0000", store.ReadKey());
+        Assert.Null(store.Store(Anthropic, "sk-ant-api03-not-a-real-key-0000"));
+        Assert.Equal("sk-ant-api03-not-a-real-key-0000", store.ReadKey(Anthropic));
 
         // The point of DPAPI. Reading the file must not hand anybody the key.
         var raw = File.ReadAllBytes(_file);
@@ -660,10 +692,10 @@ public class ApiKeyStoreTests : IDisposable
         // Both present means the user deliberately typed one while the variable was already
         // set, and the deliberate act wins. The UI names the source either way.
         var store = Store(environment: "sk-env-inherited-from-parent");
-        store.Store("sk-typed-into-chapter-app");
+        store.Store(Anthropic, "sk-typed-into-chapter-app");
 
-        Assert.Equal("sk-typed-into-chapter-app", store.ReadKey());
-        Assert.Equal(ApiKeySource.Stored, store.Read().Source);
+        Assert.Equal("sk-typed-into-chapter-app", store.ReadKey(Anthropic));
+        Assert.Equal(ApiKeySource.Stored, store.Read(Anthropic).Source);
     }
 
     [Fact]
@@ -671,19 +703,19 @@ public class ApiKeyStoreTests : IDisposable
     {
         var store = Store(environment: "sk-env-inherited-from-parent");
 
-        Assert.Equal("sk-env-inherited-from-parent", store.ReadKey());
-        Assert.Equal(ApiKeySource.Environment, store.Read().Source);
+        Assert.Equal("sk-env-inherited-from-parent", store.ReadKey(Anthropic));
+        Assert.Equal(ApiKeySource.Environment, store.Read(Anthropic).Source);
     }
 
     [Fact]
     public void Clearing_forgets_the_stored_key_and_falls_back()
     {
         var store = Store(environment: "sk-env-inherited-from-parent");
-        store.Store("sk-typed-into-chapter-app");
+        store.Store(Anthropic, "sk-typed-into-chapter-app");
 
         // An empty key is "forget it", not "store an empty one".
-        Assert.Null(store.Store("   "));
-        Assert.Equal(ApiKeySource.Environment, store.Read().Source);
+        Assert.Null(store.Store(Anthropic, "   "));
+        Assert.Equal(ApiKeySource.Environment, store.Read(Anthropic).Source);
 
         Assert.False(File.Exists(_file));
     }
@@ -693,9 +725,9 @@ public class ApiKeyStoreTests : IDisposable
     {
         var store = Store();
 
-        Assert.Null(store.ReadKey());
-        Assert.False(store.Read().HasKey);
-        Assert.Equal(ApiKeySource.None, store.Read().Source);
+        Assert.Null(store.ReadKey(Anthropic));
+        Assert.False(store.Read(Anthropic).HasKey);
+        Assert.Equal(ApiKeySource.None, store.Read(Anthropic).Source);
     }
 
     [Fact]
@@ -707,7 +739,7 @@ public class ApiKeyStoreTests : IDisposable
 
         var store = Store(environment: "sk-env-inherited-from-parent");
 
-        Assert.Equal("sk-env-inherited-from-parent", store.ReadKey());
+        Assert.Equal("sk-env-inherited-from-parent", store.ReadKey(Anthropic));
     }
 
     [Fact]

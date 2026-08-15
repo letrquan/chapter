@@ -406,6 +406,89 @@ public class AiBridgeTests : IDisposable
     }
 
     [Fact]
+    public async Task The_status_names_the_provider_and_the_variable_its_key_comes_from()
+    {
+        // The commit box has to say which of the two is configured, and the key prompt has to
+        // name the right environment variable — telling somebody pointed at Ollama to set
+        // ANTHROPIC_API_KEY would be worse than saying nothing.
+        var (dispatcher, _, settings) = await NewBridgeAsync();
+
+        var claude = await CallAsync(dispatcher, "getAiStatus");
+        Assert.Equal("anthropic", claude.GetProperty("provider").GetString());
+        Assert.Equal("ANTHROPIC_API_KEY", claude.GetProperty("environmentVariable").GetString());
+
+        settings.Ai.Provider = "openai";
+
+        var openai = await CallAsync(dispatcher, "getAiStatus");
+        Assert.Equal("openai", openai.GetProperty("provider").GetString());
+        Assert.Equal("OPENAI_API_KEY", openai.GetProperty("environmentVariable").GetString());
+    }
+
+    [Fact]
+    public async Task A_local_endpoint_needs_no_key_at_all()
+    {
+        // The case the whole provider split exists for. Ollama and LM Studio have no
+        // authentication, so demanding a key from somebody who pointed the app at localhost
+        // would refuse precisely the users this was widened for.
+        var (dispatcher, root, settings) = await NewBridgeAsync(environmentKey: null);
+
+        settings.Ai.Provider = "openai";
+        settings.Ai.BaseUrl = "http://localhost:11434";
+        settings.Ai.Model = "qwen2.5-coder";
+
+        var status = await CallAsync(dispatcher, "getAiStatus");
+
+        Assert.True(status.GetProperty("available").GetBoolean());
+        Assert.False(status.GetProperty("needsKey").GetBoolean());
+        Assert.Equal("none", status.GetProperty("source").GetString());
+        Assert.Equal("http://localhost:11434", status.GetProperty("baseUrl").GetString());
+
+        // And the request path accepts it rather than refusing for want of a credential.
+        var started = await CallAsync(
+            dispatcher, "generateCommitMessage", new { worktreePath = root });
+
+        Assert.False(string.IsNullOrEmpty(started.GetProperty("id").GetString()));
+        await CallAsync(dispatcher, "cancelGeneration", new { id = started.GetProperty("id").GetString() });
+    }
+
+    [Fact]
+    public async Task Pointing_at_openai_with_no_key_and_no_endpoint_asks_for_one()
+    {
+        var (dispatcher, _, settings) = await NewBridgeAsync(environmentKey: null);
+        settings.Ai.Provider = "openai";
+
+        var status = await CallAsync(dispatcher, "getAiStatus");
+
+        // No login profile exists for this provider, so unlike the Anthropic case the answer
+        // here is unambiguous.
+        Assert.False(status.GetProperty("available").GetBoolean());
+        Assert.True(status.GetProperty("needsKey").GetBoolean());
+        Assert.False(status.TryGetProperty("baseUrl", out _));
+    }
+
+    [Fact]
+    public async Task A_key_is_stored_against_the_provider_that_asked_for_it()
+    {
+        // Two providers, two secrets. Switching between them must not mean retyping either.
+        var (dispatcher, _, settings) = await NewBridgeAsync(environmentKey: null);
+
+        await CallAsync(dispatcher, "setApiKey", new { key = "sk-ant-stored-for-claude" });
+
+        settings.Ai.Provider = "openai";
+        var openai = await CallAsync(dispatcher, "getAiStatus");
+        Assert.Equal("none", openai.GetProperty("source").GetString());
+
+        await CallAsync(dispatcher, "setApiKey", new { key = "sk-openai-stored-separately" });
+        Assert.Equal("stored", (await CallAsync(dispatcher, "getAiStatus"))
+            .GetProperty("source").GetString());
+
+        // And the first is still there, untouched by the second.
+        settings.Ai.Provider = "anthropic";
+        Assert.Equal("stored", (await CallAsync(dispatcher, "getAiStatus"))
+            .GetProperty("source").GetString());
+    }
+
+    [Fact]
     public async Task Cancelling_a_generation_that_was_never_started_is_answered_rather_than_thrown()
     {
         var (dispatcher, _, _) = await NewBridgeAsync();
