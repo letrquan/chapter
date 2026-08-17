@@ -277,6 +277,140 @@ public sealed record MessageReviewRequest
     public string Message { get; init; } = "";
 }
 
+// ---------------------------------------------------------------------------
+// Branches, stash and tags
+// ---------------------------------------------------------------------------
+
+/// <summary>Switching this worktree to a branch.</summary>
+public sealed record SwitchBranchRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Branch { get; init; } = "";
+
+    /// <summary>
+    /// What to do about uncommitted work. <see cref="Git.CheckoutStrategy.Carry"/> is the
+    /// first attempt every time — git carries changes across whenever it can — and the
+    /// stash form is what the UI sends after that attempt is refused.
+    /// </summary>
+    public Git.CheckoutStrategy Strategy { get; init; } = Git.CheckoutStrategy.Carry;
+}
+
+public sealed record CreateBranchRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Name { get; init; } = "";
+
+    /// <summary>Where the branch begins. Empty means the current HEAD.</summary>
+    public string StartPoint { get; init; } = "";
+
+    public bool Checkout { get; init; } = true;
+}
+
+public sealed record RenameBranchRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string From { get; init; } = "";
+    public string To { get; init; } = "";
+}
+
+public sealed record DeleteBranchRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Name { get; init; } = "";
+
+    /// <summary>
+    /// Passes <c>-D</c>, which deletes a branch whose commits are on no other branch. The
+    /// UI only sets this after git has refused once and the user has been told what it
+    /// means — the refusal is the only thing separating tidying up from abandoning work.
+    /// </summary>
+    public bool Force { get; init; }
+}
+
+public sealed record SetUpstreamRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Branch { get; init; } = "";
+
+    /// <summary>Empty removes the tracking configuration rather than setting it to nothing.</summary>
+    public string Upstream { get; init; } = "";
+}
+
+public sealed record StashPushRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Message { get; init; } = "";
+
+    /// <summary>Sweeps up files git does not track, which it otherwise leaves in the tree.</summary>
+    public bool IncludeUntracked { get; init; }
+
+    /// <summary>Stashes everything but leaves the staged changes in place as well.</summary>
+    public bool KeepIndex { get; init; }
+}
+
+/// <summary>
+/// Acting on one stash entry.
+///
+/// Both fields are required together and neither is sufficient. <see cref="Index"/> is what
+/// git's command line takes; <see cref="Sha"/> is what identifies the entry, because the
+/// stash is shared across every worktree in the repository and the indices shift whenever
+/// any of them stashes. The backend refuses when the entry at that index is no longer the
+/// object the UI displayed.
+/// </summary>
+public sealed record StashEntryRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public int Index { get; init; }
+    public string Sha { get; init; } = "";
+}
+
+public sealed record CreateTagRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Name { get; init; } = "";
+
+    /// <summary>Non-empty makes the tag annotated — git's own rule, since <c>-m</c> implies <c>-a</c>.</summary>
+    public string Message { get; init; } = "";
+
+    /// <summary>The revision to tag. Empty means HEAD.</summary>
+    public string Target { get; init; } = "";
+}
+
+public sealed record DeleteTagRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Name { get; init; } = "";
+}
+
+/// <summary>
+/// Everything the ref panel renders, in one call.
+///
+/// One round trip rather than three, because the panel shows all of it at once and every
+/// mutation refreshes the lot: a branch delete changes the branch list, a stash-and-switch
+/// changes the stash list too, and reconciling three independently-timed replies against one
+/// panel is how a list ends up disagreeing with itself.
+/// </summary>
+public sealed record RefsPayload
+{
+    public required string WorktreePath { get; init; }
+    public required IReadOnlyList<Git.Branch> Branches { get; init; }
+    public required IReadOnlyList<Git.Stash> Stashes { get; init; }
+    public required IReadOnlyList<Git.Tag> Tags { get; init; }
+
+    /// <summary>The branch this worktree is on, or null when HEAD is detached.</summary>
+    public string? Current { get; init; }
+
+    /// <summary>
+    /// Whether starting something new is legal right now.
+    ///
+    /// A switch is <see cref="Git.WriteKind.StartsOperation"/>, so a merge or rebase in
+    /// progress forbids it. Answered here so the buttons can be disabled with a reason
+    /// rather than each failing individually when pressed.
+    /// </summary>
+    public bool CanSwitch { get; init; } = true;
+
+    public string? BlockedReason { get; init; }
+}
+
 /// <summary>Asks Claude for a commit message describing what is staged.</summary>
 public sealed record GenerateMessageRequest
 {

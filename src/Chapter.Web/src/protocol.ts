@@ -165,6 +165,14 @@ export type GitFailure =
   | 'authenticationRequired'
   | 'conflict'
   | 'wouldLoseChanges'
+  /**
+   * The branch is checked out in another worktree.
+   *
+   * Its own kind rather than a flavour of `wouldLoseChanges`, because nothing is at risk and
+   * there is nothing to force — the right affordance is "go to that worktree", which no
+   * other failure offers.
+   */
+  | 'checkedOutElsewhere'
   | 'rejected'
   | 'nothingToDo'
   | 'notFound'
@@ -273,6 +281,81 @@ export interface PatchLineSelection {
   hunk: number
   /** Position within the hunk body, counting context and changes alike. */
   line: number
+}
+
+/* --------------------------------------------------------------------------
+   Branches, stash and tags
+   -------------------------------------------------------------------------- */
+
+export interface Branch {
+  /** Short name — `main`, or `origin/main` for a remote-tracking ref. */
+  name: string
+  sha: string
+  isRemote: boolean
+  /** Checked out in the worktree this list was read from. */
+  isCurrent: boolean
+  /**
+   * The worktree holding this branch, when any does.
+   *
+   * The field that makes this list worth showing in *this* app: switching to a branch
+   * another worktree holds is refused by git, and the useful answer is to go there instead.
+   */
+  checkedOutIn: string | null
+  upstream: string | null
+  /** Null when there is no upstream; zero when it agrees exactly. From the last fetch. */
+  ahead: number | null
+  behind: number | null
+  /** Configured upstream that no longer exists — a deleted remote branch. */
+  isUpstreamGone: boolean
+  subject: string
+  committedAt: string | null
+  shortSha: string
+  /** Another worktree holds it, so this one cannot check it out. */
+  isCheckedOutElsewhere: boolean
+}
+
+/** What a switch should do about uncommitted work. */
+export type CheckoutStrategy = 'carry' | 'stashAndSwitch'
+
+export interface Stash {
+  /** Position, which is what `stash@{n}` means — and not the entry's identity. */
+  index: number
+  /**
+   * The entry's real identity. The stash is shared by every worktree in the repository, so
+   * indices shift whenever any of them stashes; send this back with any action.
+   */
+  sha: string
+  /** Without git's `On <branch>:` or `WIP on…` prefix. */
+  message: string
+  /** The branch it was made on, which is how a stash from another worktree is recognisable. */
+  branch: string | null
+  createdAt: string | null
+  selector: string
+  shortSha: string
+}
+
+export interface Tag {
+  name: string
+  /** The commit, never the tag object — an annotated tag's ref points at the latter. */
+  sha: string
+  isAnnotated: boolean
+  /** The tag's own message when annotated, else the commit's subject. */
+  subject: string
+  createdAt: string | null
+  shortSha: string
+}
+
+/** Everything the ref panel renders, read in one call so the three cannot disagree. */
+export interface RefsPayload {
+  worktreePath: string
+  branches: Branch[]
+  stashes: Stash[]
+  tags: Tag[]
+  /** The branch this worktree is on, or null when HEAD is detached. */
+  current: string | null
+  /** False during a merge or rebase, where starting something new is illegal. */
+  canSwitch: boolean
+  blockedReason: string | null
 }
 
 /* --------------------------------------------------------------------------
@@ -516,6 +599,42 @@ export interface Api {
     params: { worktreePath: string; message: string }
     result: MessageReviewPayload
   }
+  /** Branches, stashes and tags together — see `RefsPayload` for why it is one call. */
+  getRefs: { params: { worktreePath: string }; result: RefsPayload }
+  switchBranch: {
+    params: { worktreePath: string; branch: string; strategy?: CheckoutStrategy }
+    result: MutationPayload
+  }
+  createBranch: {
+    params: { worktreePath: string; name: string; startPoint?: string; checkout?: boolean }
+    result: MutationPayload
+  }
+  renameBranch: { params: { worktreePath: string; from: string; to: string }; result: MutationPayload }
+  /** `force` passes `-D`; only send it after git has refused once and the user was told why. */
+  deleteBranch: { params: { worktreePath: string; name: string; force?: boolean }; result: MutationPayload }
+  /** An empty `upstream` stops the branch tracking anything. */
+  setUpstream: {
+    params: { worktreePath: string; branch: string; upstream: string }
+    result: MutationPayload
+  }
+  stashPush: {
+    params: { worktreePath: string; message?: string; includeUntracked?: boolean; keepIndex?: boolean }
+    result: MutationPayload
+  }
+  /**
+   * `sha` is not optional in practice: the stash is shared across worktrees, so the backend
+   * checks it against the entry now at `index` and refuses when they disagree.
+   */
+  stashApply: { params: { worktreePath: string; index: number; sha: string }; result: MutationPayload }
+  stashPop: { params: { worktreePath: string; index: number; sha: string }; result: MutationPayload }
+  stashDrop: { params: { worktreePath: string; index: number; sha: string }; result: MutationPayload }
+  /** A non-empty `message` makes the tag annotated, which is git's own rule. */
+  createTag: {
+    params: { worktreePath: string; name: string; message?: string; target?: string }
+    result: MutationPayload
+  }
+  deleteTag: { params: { worktreePath: string; name: string }; result: MutationPayload }
+
   getAiStatus: { params: void; result: AiAvailability }
   /** Stores the key, or forgets it when empty. The key is never returned. */
   setApiKey: { params: { key: string }; result: ApiKeyPayload }

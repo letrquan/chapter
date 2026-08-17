@@ -252,6 +252,69 @@ public sealed class BridgeDispatcher
         "reviewMessage" => await ReviewMessageAsync(
             request.ParamsAs<MessageReviewRequest>(), ct).ConfigureAwait(false),
 
+        // --- branches, stash and tags -----------------------------------------
+
+        "getRefs" => await GetRefsAsync(request.ParamsAs<WorktreeRequest>(), ct).ConfigureAwait(false),
+
+        "switchBranch" => await MutateBranchAsync(
+            request.ParamsAs<SwitchBranchRequest>(),
+            (req, token) => Workspace.Branches.SwitchAsync(req.WorktreePath, req.Branch, req.Strategy, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "createBranch" => await MutateBranchAsync(
+            request.ParamsAs<CreateBranchRequest>(),
+            (req, token) => Workspace.Branches.CreateAsync(
+                req.WorktreePath, req.Name, req.StartPoint, req.Checkout, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "renameBranch" => await MutateBranchAsync(
+            request.ParamsAs<RenameBranchRequest>(),
+            (req, token) => Workspace.Branches.RenameAsync(req.WorktreePath, req.From, req.To, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "deleteBranch" => await MutateBranchAsync(
+            request.ParamsAs<DeleteBranchRequest>(),
+            (req, token) => Workspace.Branches.DeleteAsync(req.WorktreePath, req.Name, req.Force, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "setUpstream" => await MutateAsync(
+            request.ParamsAs<SetUpstreamRequest>(),
+            (req, token) => Workspace.Branches.SetUpstreamAsync(
+                req.WorktreePath, req.Branch, req.Upstream, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "stashPush" => await MutateAsync(
+            request.ParamsAs<StashPushRequest>(),
+            (req, token) => Workspace.Stashes.PushAsync(
+                req.WorktreePath, req.Message, req.IncludeUntracked, req.KeepIndex, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "stashApply" => await MutateAsync(
+            request.ParamsAs<StashEntryRequest>(),
+            (req, token) => Workspace.Stashes.ApplyAsync(req.WorktreePath, req.Index, req.Sha, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "stashPop" => await MutateAsync(
+            request.ParamsAs<StashEntryRequest>(),
+            (req, token) => Workspace.Stashes.PopAsync(req.WorktreePath, req.Index, req.Sha, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "stashDrop" => await MutateAsync(
+            request.ParamsAs<StashEntryRequest>(),
+            (req, token) => Workspace.Stashes.DropAsync(req.WorktreePath, req.Index, req.Sha, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "createTag" => await MutateAsync(
+            request.ParamsAs<CreateTagRequest>(),
+            (req, token) => Workspace.Tags.CreateAsync(
+                req.WorktreePath, req.Name, req.Message, req.Target, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
+        "deleteTag" => await MutateAsync(
+            request.ParamsAs<DeleteTagRequest>(),
+            (req, token) => Workspace.Tags.DeleteAsync(req.WorktreePath, req.Name, token),
+            req => req.WorktreePath, ct).ConfigureAwait(false),
+
         // --- generated commit messages ----------------------------------------
 
         "getAiStatus" => Generator.Describe(),
@@ -385,6 +448,98 @@ public sealed class BridgeDispatcher
             // of running the command, so no call site has to remember.
             AnnounceSelfWrite(worktreePath);
         }
+    }
+
+    /// <summary>
+    /// A branch mutation, which needs one refresh more than any other kind.
+    ///
+    /// Every mutation invalidates the changed-file scan; a branch mutation also changes what
+    /// the *rail* says, because a worktree is labelled with the branch it is on. Nothing else
+    /// in the app moves that label, so without this a switch leaves every worktree row naming
+    /// the branch it used to be on until something else happens to reload them.
+    ///
+    /// Announced on failure too. A stash-and-switch that fails part-way has still stashed,
+    /// and a rename that reports an error has occasionally still moved the ref.
+    /// </summary>
+    private async Task<object> MutateBranchAsync<TRequest>(
+        TRequest request,
+        Func<TRequest, CancellationToken, Task<GitMutation>> run,
+        Func<TRequest, string> worktreeOf,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await MutateAsync(request, run, worktreeOf, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await AnnounceBranchChangeAsync(worktreeOf(request), ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Tells the front-end to re-read the worktree list for the repository a worktree
+    /// belongs to.
+    ///
+    /// The repository is resolved by asking git rather than by remembering, because the
+    /// event carries a repo path and the caller only has a worktree path. That is one extra
+    /// git process on an action that already ran several, and it is exact — where a guess
+    /// from the directory layout would be wrong for the sibling-worktree arrangement the app
+    /// explicitly supports.
+    /// </summary>
+    private async Task AnnounceBranchChangeAsync(string worktreePath, CancellationToken ct)
+    {
+        try
+        {
+            var worktrees = await Workspace.GetWorktreesAsync(worktreePath, ct).ConfigureAwait(false);
+            var main = worktrees.FirstOrDefault(w => w.IsMain);
+
+            if (main is not null) RaiseEvent("worktreesChanged", new { repoPath = main.Path });
+        }
+        catch (GitException ex)
+        {
+            // The refresh is a courtesy; the mutation itself already happened and has been
+            // reported. Failing here would turn a successful switch into an error.
+            System.Diagnostics.Debug.WriteLine($"Could not announce a branch change: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Everything the ref panel shows, read together.
+    ///
+    /// One call rather than three: the panel renders all of it at once and every mutation
+    /// refreshes the lot, so three independently-timed replies would only give the panel
+    /// more ways to disagree with itself.
+    /// </summary>
+    private async Task<object> GetRefsAsync(WorktreeRequest req, CancellationToken ct)
+    {
+        if (!Workspace.IsKnownWorktree(req.WorktreePath))
+            throw new InvalidOperationException("That worktree is not open in this window.");
+
+        var branchTask = Workspace.Branches.ListAsync(req.WorktreePath, ct);
+        var stashTask = Workspace.Stashes.ListAsync(req.WorktreePath, ct);
+        var tagTask = Workspace.Tags.ListAsync(req.WorktreePath, ct);
+        var stateTask = Workspace.GetRepositoryStateAsync(req.WorktreePath, ct);
+
+        await Task.WhenAll(branchTask, stashTask, tagTask, stateTask).ConfigureAwait(false);
+
+        var state = await stateTask.ConfigureAwait(false);
+        var branches = await branchTask.ConfigureAwait(false);
+
+        // The same question the writer's guard will ask, asked early so the buttons can say
+        // why they are disabled instead of each failing when pressed.
+        var guard = state.CanWrite(WriteKind.StartsOperation);
+
+        return new RefsPayload
+        {
+            WorktreePath = req.WorktreePath,
+            Branches = branches,
+            Stashes = await stashTask.ConfigureAwait(false),
+            Tags = await tagTask.ConfigureAwait(false),
+            Current = branches.FirstOrDefault(b => b.IsCurrent)?.Name,
+            CanSwitch = guard.Allowed,
+            BlockedReason = guard.Reason,
+        };
     }
 
     /// <summary>
