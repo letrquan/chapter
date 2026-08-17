@@ -54,6 +54,18 @@ public sealed class WorkspaceService
 
     public CommitService Commits { get; }
 
+    /// <summary>Lists branches and moves between them.</summary>
+    public BranchService Branches { get; }
+
+    /// <summary>
+    /// The stash — which is repository-wide, not per-worktree, so this one instance serves
+    /// every worktree the app has open. See the type's own notes for why that matters here
+    /// more than it does in other git clients.
+    /// </summary>
+    public StashService Stashes { get; }
+
+    public TagService Tags { get; }
+
     /// <summary>
     /// The last repository-state reading per worktree, with the moment it was taken.
     ///
@@ -108,6 +120,9 @@ public sealed class WorkspaceService
         Undo = new UndoService(git, Writer);
         Staging = new StagingService(git, Writer);
         Commits = new CommitService(git, Writer, Undo);
+        Branches = new BranchService(git, Writer, Undo);
+        Stashes = new StashService(git, Writer, Undo);
+        Tags = new TagService(git, Writer, Undo);
     }
 
     /// <summary>

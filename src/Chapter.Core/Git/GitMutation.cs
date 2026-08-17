@@ -27,6 +27,17 @@ public enum GitFailure
     /// <summary>Refused because it would lose work — an unmerged path, a dirty tree.</summary>
     WouldLoseChanges,
 
+    /// <summary>
+    /// The ref is checked out in another worktree, so this one may not touch it.
+    ///
+    /// Its own member rather than a flavour of <see cref="WouldLoseChanges"/> because the
+    /// useful answer is different: nothing is at risk and there is nothing to force — the
+    /// branch is simply already open somewhere, and the app can offer to go there. Every
+    /// other git GUI meets this rarely; this one is built around having several worktrees
+    /// open at once, so it is an ordinary outcome rather than an edge case.
+    /// </summary>
+    CheckedOutElsewhere,
+
     /// <summary>The remote refused the update, typically a non-fast-forward push.</summary>
     Rejected,
 
@@ -154,6 +165,12 @@ public static class GitFailureClassifier
         if (IsLocked(text)) return GitFailure.Locked;
         if (IsAuthentication(text)) return GitFailure.AuthenticationRequired;
         if (IsRejected(text)) return GitFailure.Rejected;
+
+        // Ahead of Conflict and WouldLoseChanges, both of which it would otherwise fall
+        // into: git phrases the refusal as a checkout problem, and the two commands that
+        // hit it say different things about the same situation.
+        if (IsCheckedOutElsewhere(text)) return GitFailure.CheckedOutElsewhere;
+
         if (IsConflict(text)) return GitFailure.Conflict;
         if (IsOperationInProgress(text)) return GitFailure.OperationInProgress;
         if (IsWouldLoseChanges(text)) return GitFailure.WouldLoseChanges;
@@ -219,12 +236,25 @@ public static class GitFailureClassifier
         Has(text, "middle of a merge") ||
         Has(text, "You are in the middle of");
 
+    /// <summary>
+    /// A branch that is checked out in another worktree.
+    ///
+    /// The two commands that hit this word it differently — <c>switch</c> says
+    /// "'x' is already used by worktree at '…'" and <c>branch -d</c> says "cannot delete
+    /// branch 'x' used by worktree at '…'" — but both contain the phrase below, which is
+    /// also specific enough not to appear anywhere else.
+    /// </summary>
+    private static bool IsCheckedOutElsewhere(string text) => Has(text, "used by worktree at");
+
     private static bool IsWouldLoseChanges(string text) =>
         Has(text, "Your local changes to the following files would be overwritten") ||
         Has(text, "would be overwritten by") ||
         Has(text, "refusing to lose untracked file") ||
         Has(text, "The following untracked working tree files would be overwritten") ||
         Has(text, "not uptodate") ||
+        // Deleting a branch whose commits are on no other branch. Squarely "would lose
+        // work": the commits become unreachable, and the way forward is `branch -D`.
+        Has(text, "is not fully merged") ||
         Has(text, "Please commit your changes or stash them");
 
     private static bool IsNothingToDo(string text) =>
@@ -259,6 +289,7 @@ public static class GitFailureClassifier
         GitFailure.AuthenticationRequired => $"Could not {operation}: the remote needs credentials",
         GitFailure.Conflict => $"{operation} stopped on conflicts that need resolving",
         GitFailure.WouldLoseChanges => $"Could not {operation}: it would overwrite uncommitted changes",
+        GitFailure.CheckedOutElsewhere => $"Could not {operation}: that branch is checked out in another worktree",
         GitFailure.Rejected => $"Could not {operation}: the remote rejected the update",
         GitFailure.NothingToDo => $"Nothing to {operation}",
         GitFailure.NotFound => $"Could not {operation}: git could not find what was named",

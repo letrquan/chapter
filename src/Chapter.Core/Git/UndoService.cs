@@ -49,6 +49,21 @@ public sealed record UndoPoint
 
     public string? Branch { get; init; }
 
+    /// <summary>
+    /// Whether HEAD moving since invalidates this point.
+    ///
+    /// True for anything whose inverse names a commit — undoing a commit with
+    /// <c>reset --soft</c> to a remembered sha throws away whatever landed on top of it,
+    /// which is the case this whole check exists for.
+    ///
+    /// False for the inverses that name a *ref* rather than a commit: renaming a branch
+    /// back, or recreating a deleted one at its old tip, does the same correct thing
+    /// whatever HEAD has done in the meantime. Leaving the check on for those would refuse
+    /// a safe undo whenever the agent in that worktree happened to commit first — and in
+    /// this app that is the expected case, not the unusual one.
+    /// </summary>
+    public bool VerifiesHead { get; init; } = true;
+
     /// <summary>Whether reversing this loses work that is not recoverable from the reflog.</summary>
     public bool IsDestructive { get; init; }
 
@@ -201,18 +216,23 @@ public sealed class UndoService(GitCli git, GitWriter writer)
         var point = Peek(worktreePath);
         if (point is null) return NothingToUndo(worktreePath);
 
-        // Refused rather than skipped when there is nothing to compare against. A null
-        // expectation means the probe failed when the point was recorded, which is
-        // indistinguishable from "no commits yet" — and treating it as permission to reset
-        // unconditionally turns the one check that protects the agent's work into a check
-        // that silently is not there.
-        var current = await CaptureHeadAsync(worktreePath, ct).ConfigureAwait(false);
+        // Skipped only where the inverse names a ref rather than a commit, which makes it
+        // correct regardless of where HEAD is. Everything else is checked.
+        if (point.VerifiesHead)
+        {
+            // Refused rather than skipped when there is nothing to compare against. A null
+            // expectation means the probe failed when the point was recorded, which is
+            // indistinguishable from "no commits yet" — and treating it as permission to
+            // reset unconditionally turns the one check that protects the agent's work into
+            // a check that silently is not there.
+            var current = await CaptureHeadAsync(worktreePath, ct).ConfigureAwait(false);
 
-        if (point.ExpectedHeadSha is null)
-            return CannotVerify(worktreePath, point);
+            if (point.ExpectedHeadSha is null)
+                return CannotVerify(worktreePath, point);
 
-        if (!string.Equals(current, point.ExpectedHeadSha, StringComparison.OrdinalIgnoreCase))
-            return HeadMoved(worktreePath, point);
+            if (!string.Equals(current, point.ExpectedHeadSha, StringComparison.OrdinalIgnoreCase))
+                return HeadMoved(worktreePath, point);
+        }
 
         // WorkingTree, not StartsOperation: both recorded inverses only move this branch's
         // own pointer, and they stay legal — and wanted — while an agent has a merge in
