@@ -397,9 +397,13 @@ function stashHtml(stash: Stash): string {
 function tagRows(query: string): Row[] {
   if (!refs) return []
 
+  // indexOf against the unfiltered list, never the filtered one's position. Every action
+  // resolves its row against `refs.tags`, so a filtered position would name a different tag
+  // than the row that was clicked — filter to "v0", press the bin, and the tag above it is
+  // the one deleted, under a dialog carrying its name.
   return refs.tags
     .filter((t) => t.name.toLowerCase().includes(query))
-    .map((tag, index) => ({ html: tagHtml(tag, index) }))
+    .map((tag) => ({ html: tagHtml(tag, refs!.tags.indexOf(tag)) }))
 }
 
 function tagHtml(tag: Tag, id: number): string {
@@ -575,6 +579,15 @@ async function switchTo(branch: string): Promise<void> {
   )
 }
 
+/**
+ * Runs a row's secondary action.
+ *
+ * `id` is always an index into the **unfiltered** list the row came from — `refs.branches`,
+ * `refs.tags`, or a stash's own `index`. Filtering changes what is on screen and never what
+ * a row is called, because everything here resolves against those arrays: a filtered
+ * position would silently name a different ref than the row the user clicked, which for the
+ * delete actions means destroying the wrong one under a dialog carrying the right one's name.
+ */
 async function runRowAction(id: number, action: string): Promise<void> {
   if (!refs || !worktreePath) return
 
