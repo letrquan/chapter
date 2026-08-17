@@ -282,13 +282,59 @@ and the rest speak. Everything below is unchanged for both, except where noted:
 
 ## Phase 3 — Branches, stash, refs
 
-- [ ] Branch list per repo (local + remote), with ahead/behind
-- [ ] Create / rename / delete branch *(delete is destructive)*
-- [ ] **[HARD]** Checkout with a dirty tree — the decision point most GUIs get wrong.
+**Complete**, except for pushing a tag, which is Phase 5's problem rather than this one's:
+a tag reaches a remote through `git push`, and `AllowCredentialPrompts` is still false, so
+it would fail opaquely rather than asking. It is listed there now.
+
+Two facts about git shaped this more than the commands did, and both were settled by
+running git rather than from memory:
+
+- **The stash is repository-wide.** `refs/stash` lives in the *common* git directory, so one
+  stash list serves every worktree — an entry made in one appears in all of them, and
+  `stash@{0}` renumbers whenever any of them stashes. Every other client can treat a
+  positional selector as an identity; this app cannot.
+- **`for-each-ref` and the log formatters are different format languages.** The separator is
+  `%1f` in one and `%x1f` in the other, and each spelling is emitted *literally* by the
+  other — silently, with every field landing in column one.
+
+- [x] Branch list per repo (local + remote), with ahead/behind
+      → One `for-each-ref` per call, not one process per branch. `%(worktreepath)` comes back
+      in the same invocation, which is the field that makes the list worth showing in *this*
+      app: it says which worktree already has a branch open, so the row can offer to go there
+      instead of attempting a switch git will refuse. Ahead/behind is `%(upstream:track)`,
+      and it is as old as the last fetch — stated in the tooltip rather than implied.
+- [x] Create / rename / delete branch *(delete is destructive)*
+      → Delete is destructive and **recoverable**, which the confirmation is allowed to say
+      because the tip is resolved before the delete and undo recreates the branch at exactly
+      that commit. Git's own `Deleted branch x (was 33a982a)` is abbreviated, and an
+      abbreviation that is unambiguous today stops being so as the repository grows.
+      Renaming a branch another worktree has checked out **succeeds** and moves that worktree
+      with it — the opposite of delete, and worth knowing rather than assuming.
+- [x] **[HARD]** Checkout with a dirty tree — the decision point most GUIs get wrong.
       Offer: stash-and-switch, carry changes, or abort. Never silently discard.
-- [ ] Set upstream / track
-- [ ] Stash: create (with message, optionally including untracked), list, apply, pop, drop
-- [ ] Tags: list, create annotated/lightweight, delete, push
+      → **Attempted, then offered — never pre-checked.** Git carries uncommitted changes
+      across whenever no file differs between the two branches, which is the common case and
+      is exactly the "carry" option; refusing first on "the tree is dirty" would block the
+      switch git was going to allow. Only git's refusal turns into the question.
+      The stash path is the one with a window where the user's work exists in one place only,
+      so every failure inside it has to end somewhere findable: the switch failing pops the
+      stash back, and *the pop failing too* — an agent writing to the same files in that
+      second, which is this app's ordinary case — is reported with the stash named. A
+      conflicted restore is reported as a successful switch whose work is still in the stash,
+      because saying "could not switch" would send the user looking on the wrong branch.
+- [x] Set upstream / track
+- [x] Stash: create (with message, optionally including untracked), list, apply, pop, drop
+      → Every mutation carries the sha the UI displayed and is refused when the entry at that
+      index is no longer the same object. `apply` is then named by sha outright; `pop` and
+      `drop` cannot be — both remove an entry, which is inherently positional, and git
+      rejects a raw commit for either. Dropping is undoable via `stash store`, which is why
+      its confirmation says so rather than claiming permanence it does not have.
+- [x] Tags: list, create annotated/lightweight, delete
+      → A message is what makes a tag annotated, so asking for one *is* the choice between
+      the two kinds — git's rule (`-m` implies `-a`), not an invention. Delete restores the
+      ref's own object rather than the commit behind it: recreating an annotated tag from its
+      commit would silently produce a lightweight one and lose the message.
+- [ ] ~~Tags: push~~ → moved to Phase 5, with the rest of the credential story.
 
 ## Phase 4 — History
 
@@ -314,6 +360,11 @@ The credential story is the hard part, not the commands.
 - [ ] Pull strategy: merge vs rebase vs fast-forward-only
 - [ ] `--force-with-lease` — never plain `--force`
 - [ ] Ahead/behind indicators in the worktree rail
+      *(Phase 3 reads the counts already — `%(upstream:track)` in the branch list — so this
+      is a matter of surfacing them on the rail, not of computing them. They are as old as
+      the last fetch until this phase gives the app a way to fetch.)*
+- [ ] **Push a tag.** Moved from Phase 3, which built everything about tags except this:
+      it is a network operation and blocked on the same credential work as the rest.
 - [ ] Remote management: add, rename, remove, prune
 - [ ] PR integration via `gh` CLI (create, view, checkout) — optional, high value given the
       agent workflow
@@ -379,6 +430,12 @@ Nothing else on this list is unique to this app. These are.
       `core.autocrlf=true` one for hunk patches), `CommitMessageTests` (no repository at
       all) and `CommitBridgeTests` (the JSON seam, where a rename in `Messages.cs` becomes
       a missing field in `protocol.ts` rather than a compile error).
+      Phase 3 added a **two-worktree** fixture, because half of what it had to get right is
+      only observable with one: which worktree holds a branch, that the stash is shared, that
+      a rename follows into the other worktree. Its fixtures also pin `core.autocrlf=false`
+      rather than inheriting it — the Windows installer's default is `true`, which rewrites
+      every line ending on checkout and fails content assertions for reasons unrelated to
+      what is under test.
 - [ ] **Dry-run / preview** for anything destructive
 - [ ] **Long-running operations** — the bridge has a 60s call timeout (`bridge.ts`); clone,
       fetch, and push will exceed it. Needs a progress protocol, not a longer timeout.
@@ -407,9 +464,13 @@ Nothing else on this list is unique to this app. These are.
    OpenAI-compatible dialect. The open decision it started with — where the API key lives —
    is answered in `ApiKeyStore`, and the streaming it needed is the long-running-operation
    protocol the rest of the roadmap was going to need anyway.
-4. **Phase 3** — **Next**: branches and stash, needed before checkout is safe.
-5. **Phase 7** — worktree management. Cheap, and this app should obviously own it.
-6. **Phase 5** — push/pull. Blocked on credentials, so start that spike early.
+4. ~~**Phase 3**~~ — done. Branches, stash and tags. Checkout with a dirty tree turned out
+   to need less invention than expected and more care than expected: git already does the
+   right thing most of the time, and the work was in not getting in its way, then in making
+   sure the one path where the user's work exists only in a stash can never end silently.
+5. **Phase 7** — **Next**: worktree management. Cheap, and this app should obviously own it.
+6. **Phase 5** — push/pull. Blocked on credentials, so start that spike early. It also now
+   owns tag pushing, which Phase 3 deliberately left behind.
 7. **Phase 4 + 6** — history and conflicts. Both large; conflicts especially.
 8. **Phase 8** — the differentiators, once the fundamentals are solid.
 

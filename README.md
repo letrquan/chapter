@@ -14,7 +14,9 @@ something, one keystroke opens the file at that exact line in Rider or VS Code.
 
 Review is the point, but you can also act on what you find: stage by file, hunk or line,
 discard, edit, and commit — without leaving the window or losing which worktree you were in.
-Claude will write the commit message if you would rather not.
+Claude will write the commit message if you would rather not. Branches, stashes and tags are
+one keystroke away, and the branch list knows which worktree already has a branch open, so
+switching to it takes you there rather than failing.
 
 It is a review cockpit, not an IDE.
 
@@ -167,12 +169,52 @@ Because an agent may be writing to the same worktree, a hunk selection carries a
 of the diff it was made against. If the file changed in between, the stage is refused rather
 than applied to whatever hunk now sits at that index.
 
+**The stash is repository-wide, and this app is the one that notices.** `refs/stash` lives in
+the *common* git directory, so every worktree in a repository shares a single stash list: an
+entry made in one appears in all of them, and `stash@{0}` renumbers whenever any of them
+stashes. Every other git client can treat `stash@{n}` as an identity because only one thing
+is ever stashing; here an agent in another worktree can renumber the list between it being
+drawn and a button being pressed. So every stash action carries the commit sha the list
+displayed, and the backend refuses when the entry at that index is no longer that object —
+the same move the hunk fingerprint makes, for the same reason. `apply` is then named by sha
+outright; `pop` and `drop` cannot be, since removing an entry is inherently positional and
+git rejects a raw commit for both.
+
+**Switching branches is attempted, not pre-checked.** Git carries uncommitted changes across
+whenever no file differs between the two branches — which is most of the time, and is exactly
+the "carry my changes" option other clients offer as a choice. Asking "shall I stash first?"
+whenever the tree is dirty would put a dialog in front of a switch that was going to work, so
+Chapter tries it and turns only git's actual refusal into the question. Answering it stashes,
+switches, restores and drops the stash.
+
+That path is the one place in the app where the user's work exists in exactly one place for a
+moment, so none of its failures are allowed to end quietly. If the switch fails the stash is
+popped back; if *that* pop also fails — an agent writing to the same files in that second,
+which here is ordinary rather than exotic — the message names the stash the work is sitting
+in. And a restore that conflicts is reported as a successful switch whose changes are still
+stashed, because "could not switch" would send you looking for them on the wrong branch.
+
+**The branch list knows where a branch already is.** `git for-each-ref` reports
+`%(worktreepath)` in the same invocation as the name and the tracking counts, so the list
+knows which worktree has each branch checked out before anything is attempted. Switching to a
+branch another worktree holds is refused by git — `fatal: 'x' is already used by worktree at
+…` — and the useful response is not an error but a destination, so that row takes you to that
+worktree instead. It has its own failure kind (`CheckedOutElsewhere`) rather than being filed
+under "would lose changes", because nothing is at risk and there is nothing to force.
+
 **Nothing destructive happens without saying whether it can be undone.** One confirmation
 dialog covers all of it, and it states recoverability every time rather than relying on a
 red button to imply it. Discarding is *permanent* and says so — working-tree content that
 was never staged is in no git object, so the reflog cannot bring it back. Committing is not:
 undo is offered straight afterwards, labelled with what it would reverse, and it refuses if
 anything else has committed in that worktree since.
+
+Deleting a branch and dropping a stash both say *undoable*, and both earned it rather than
+being assumed: the branch's tip is resolved before the delete so undo recreates it at exactly
+that commit, and a dropped stash is only unreferenced, so `git stash store` puts the entry
+back with its contents intact. Those inverses name a ref rather than a commit, which makes
+them correct however far HEAD has moved — so unlike the commit undo they are not refused when
+an agent commits in between, which in this app is the expected case rather than a rare one.
 
 **Editing is conditional, and unsaved work is never overwritten.** The diff stays read-only
 — its left pane is a commit — while the code view becomes editable when the backend confirms
@@ -258,6 +300,7 @@ providers for it. Nothing above that seam is C#-specific.
 | `Ctrl` `Tab` | Cycle worktrees |
 | `Ctrl` `P` | Go to file |
 | `Ctrl` `T` | Go to symbol |
+| `Ctrl` `B` | Branches, stashes and tags |
 | `F12` | Go to definition (C#) |
 | `Shift` `F12` | Find usages (C#) |
 | `Ctrl` `D` | Toggle diff / code |
@@ -343,9 +386,9 @@ fail the whole request.
 
 ## Not in this version
 
-No build or test runner · no branch, stash or tag management · no fetch/pull/push · no
-merge or rebase · no conflict-resolution UI beyond detecting and listing conflicted files ·
-no history or blame view · no worktree create or delete · no cross-worktree comparison · no
+No build or test runner · no fetch/pull/push, and so no pushing a tag either · no merge or
+rebase · no conflict-resolution UI beyond detecting and listing conflicted files · no
+history or blame view · no worktree create or delete · no cross-worktree comparison · no
 semantic (MSBuild) engine · no semantic navigation for languages other than C# — diff and
 browse work for everything Monaco tokenises.
 
