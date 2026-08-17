@@ -120,7 +120,12 @@ function build(): void {
     render()
   })
 
-  filter.addEventListener('keydown', onKey)
+  // Bound to the panel rather than to the filter field, so the keyboard keeps working
+  // wherever focus has landed inside it. Pressing an action button moves focus onto that
+  // button, and with the handler on the input alone the arrows and Enter went dead until
+  // the user clicked back into the field — in an app whose whole point is the keyboard.
+  // The inline prompt still gets first refusal: it stops the event before it reaches here.
+  overlay!.addEventListener('keydown', onKey)
 
   // Delegated, because the list is rebuilt on every render and per-row listeners would be
   // re-attached each time — and would keep firing against rows that no longer exist.
@@ -245,9 +250,7 @@ function render(): void {
         : tagRows(query)
 
   if (rows.length === 0) {
-    list.innerHTML = `<div class="refs-empty">${
-      query ? 'No matches' : `Nothing in ${section === 'branches' ? 'this repository' : 'the ' + section}`
-    }</div>`
+    list.innerHTML = `<div class="refs-empty">${esc(emptyMessage(query))}</div>`
   } else {
     if (selected >= rows.length) selected = rows.length - 1
 
@@ -260,6 +263,27 @@ function render(): void {
   }
 
   renderFooter()
+}
+
+/**
+ * What an empty list says.
+ *
+ * Written out per section rather than assembled from the section name: "the stash" is
+ * singular in git's own language and "Nothing in the tags" is not a sentence anybody would
+ * write on purpose. An empty list is also the first thing a new user sees here, so it is
+ * worth it being a sentence.
+ */
+function emptyMessage(query: string): string {
+  if (query.length > 0) return 'No matches'
+
+  switch (section) {
+    case 'stashes':
+      return 'The stash is empty'
+    case 'tags':
+      return 'No tags yet'
+    default:
+      return 'No branches in this repository'
+  }
 }
 
 function renderFooter(): void {
