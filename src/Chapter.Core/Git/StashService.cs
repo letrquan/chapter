@@ -185,6 +185,49 @@ public sealed class StashService(GitCli git, GitWriter writer, UndoService undo)
         RunOnEntryAsync(worktreePath, index, expectedSha, "pop", WriteKind.StartsOperation, ct);
 
     /// <summary>
+    /// Restores a particular stash object, wherever it has since moved to in the list.
+    ///
+    /// For callers that made a stash themselves and want that one back rather than whatever
+    /// is on top now — which is not the same question, because the list is shared with every
+    /// other worktree and reorders under them. <c>git stash pop</c> with no argument answers
+    /// the second question, and answering it where the first was meant restores somebody
+    /// else's work and drops their entry.
+    /// </summary>
+    public async Task<GitMutation> PopBySha(string worktreePath, string sha, CancellationToken ct = default)
+    {
+        var entries = await ListAsync(worktreePath, ct).ConfigureAwait(false);
+        var entry = entries.FirstOrDefault(s => string.Equals(s.Sha, sha, StringComparison.OrdinalIgnoreCase));
+
+        if (entry is null)
+        {
+            return Refused(worktreePath, $"restore stash {Abbreviate(sha)}",
+                "it is no longer in the stash — something else may have applied or dropped it");
+        }
+
+        return await PopAsync(worktreePath, entry.Index, entry.Sha, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The entry a <see cref="PushAsync"/> just created, or null when it created none.
+    ///
+    /// Needed because a push that stashes nothing is *not* a failure: on a clean tree
+    /// <c>git stash push</c> prints "No local changes to save" and exits zero, so a caller
+    /// checking only the exit code believes it has a stash waiting. Identified by being
+    /// absent from the list beforehand and carrying the message the caller chose, so an
+    /// entry another worktree added in the same moment is not mistaken for it.
+    /// </summary>
+    public static Stash? NewEntry(
+        IReadOnlyList<Stash> before, IReadOnlyList<Stash> after, string message)
+    {
+        var seen = before.Select(s => s.Sha).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return after.FirstOrDefault(s =>
+            !seen.Contains(s.Sha) && string.Equals(s.Message, message, StringComparison.Ordinal));
+    }
+
+    private static string Abbreviate(string sha) => sha.Length >= 7 ? sha[..7] : sha;
+
+    /// <summary>
     /// Removes a stash without restoring it.
     ///
     /// Destructive, and the confirmation says so — but *not* permanently, which is the

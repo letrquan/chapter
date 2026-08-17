@@ -72,7 +72,14 @@ public enum CheckoutStrategy
 /// name, tip, upstream, ahead/behind and which worktree holds it in a single invocation.
 /// A process per row would sit behind a list that refreshes after every mutation.
 /// </summary>
-public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo)
+/// <param name="stashes">
+/// Used by the stash-and-switch path rather than reimplemented there. Every stash mutation
+/// has to name the entry it means by sha, because the list is shared with every other
+/// worktree in the repository and reorders under them; that rule lives in
+/// <see cref="StashService"/>, and a second implementation of stashing here is a second
+/// place for it to be got wrong.
+/// </param>
+public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo, StashService stashes)
 {
     /// <summary>
     /// Field separator for <c>for-each-ref</c>, as that command spells it.
@@ -310,12 +317,26 @@ public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo
         var operation = $"stash and switch to {branch}";
         var label = $"switching to {branch}";
 
-        var stash = await writer
-            .RunAsync(worktreePath, operation, WriteKind.StartsOperation, ct,
-                ["stash", "push", "--include-untracked", "-m", label])
+        // What the stash held beforehand, so the entry this call creates can be told apart
+        // from the ones already there — and from any another worktree adds while it runs.
+        var before = await stashes.ListAsync(worktreePath, ct).ConfigureAwait(false);
+
+        var stash = await stashes
+            .PushAsync(worktreePath, label, includeUntracked: true, ct: ct)
             .ConfigureAwait(false);
 
         if (!stash.Success) return stash with { Operation = operation };
+
+        var after = await stashes.ListAsync(worktreePath, ct).ConfigureAwait(false);
+
+        // Null means the push stashed nothing, which is a success rather than a failure:
+        // `git stash push` on a clean tree prints "No local changes to save" and exits zero.
+        // An agent committing the offending change while the confirmation was on screen
+        // makes that the ordinary case here, not a rare one — and it is the case where an
+        // unqualified `git stash pop` would restore whatever entry happened to be on top and
+        // drop it, which for a stash list shared with every other worktree is somebody
+        // else's work.
+        var ours = StashService.NewEntry(before, after, label);
 
         var switched = await writer
             .RunAsync(worktreePath, operation, WriteKind.StartsOperation, ct, ["switch", "--", branch])
@@ -323,9 +344,9 @@ public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo
 
         if (!switched.Success)
         {
-            var putBack = await writer
-                .RunAsync(worktreePath, operation, WriteKind.WorkingTree, ct, ["stash", "pop"])
-                .ConfigureAwait(false);
+            if (ours is null) return switched with { Operation = operation };
+
+            var putBack = await stashes.PopBySha(worktreePath, ours.Sha, ct).ConfigureAwait(false);
 
             // The compensation can fail too, and in this app that is not far-fetched: an
             // agent writing to the same files in the second between the stash and the pop is
@@ -341,9 +362,11 @@ public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo
             };
         }
 
-        var restored = await writer
-            .RunAsync(worktreePath, operation, WriteKind.WorkingTree, ct, ["stash", "pop"])
-            .ConfigureAwait(false);
+        // Nothing was stashed, so there is nothing to carry across. The switch is the whole
+        // of the operation and it worked.
+        if (ours is null) return switched with { Operation = operation };
+
+        var restored = await stashes.PopBySha(worktreePath, ours.Sha, ct).ConfigureAwait(false);
 
         if (restored.Success) return restored with { Operation = operation };
 

@@ -544,11 +544,13 @@ async function useBranch(branch: Branch): Promise<void> {
  * was going to work.
  */
 async function switchTo(branch: string): Promise<void> {
-  // wouldLoseChanges is not reported: it is the refusal this function exists to answer, and
-  // the question below is the answer.
+  // Neither of these is reported by `run`, because both are answered below in words chosen
+  // for them: one becomes the stash question, the other a single sentence. Left in, each
+  // would arrive first as a red toast carrying git's raw stderr — so the alarming version
+  // of the news would beat the useful one to the screen.
   const result = await run(
     () => call('switchBranch', { worktreePath: worktreePath!, branch }),
-    ['wouldLoseChanges'],
+    ['wouldLoseChanges', 'checkedOutElsewhere'],
   )
 
   if (!result || result.ok) return

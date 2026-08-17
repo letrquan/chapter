@@ -312,6 +312,87 @@ public class RefTests : IDisposable
     }
 
     [Fact]
+    public async Task Stash_and_switch_with_nothing_to_stash_leaves_other_stashes_alone()
+    {
+        // The corruption this guards. `git stash push` on a clean tree prints "No local
+        // changes to save" and exits *zero*, so checking the exit code alone says a stash is
+        // waiting when none was made — and an unqualified `git stash pop` then restores
+        // whatever entry is on top and drops it. Since the stash is shared by every worktree
+        // in the repository, that entry is somebody else's work.
+        //
+        // Reachable in ordinary use: the UI only offers this after a plain switch is refused,
+        // and an agent can commit the offending change while the confirmation is on screen.
+        var root = await NewRepoAsync();
+        var workspace = await NewWorkspaceAsync(root);
+
+        await RunAsync(root, "branch", "other");
+
+        await File.WriteAllTextAsync(Path.Combine(root, "A.txt"), "someone else's work\n");
+        Assert.True((await workspace.Stashes.PushAsync(root, "unrelated work")).Success);
+
+        // The tree is clean now, exactly as it would be had an agent just committed.
+        Assert.Equal("one\n", await File.ReadAllTextAsync(Path.Combine(root, "A.txt")));
+
+        var mutation = await workspace.Branches
+            .SwitchAsync(root, "other", CheckoutStrategy.StashAndSwitch);
+
+        Assert.True(mutation.Success, mutation.Message);
+        Assert.Equal("other", await workspace.Branches.CurrentBranchAsync(root));
+
+        var remaining = Assert.Single(await workspace.Stashes.ListAsync(root));
+        Assert.Equal("unrelated work", remaining.Message);
+
+        // And it was not silently applied to the branch we landed on.
+        Assert.Equal("one\n", await File.ReadAllTextAsync(Path.Combine(root, "A.txt")));
+    }
+
+    [Fact]
+    public async Task Stash_and_switch_restores_its_own_entry_when_another_worktree_stashes_too()
+    {
+        // The second half of the same hazard. Our entry is stash@{0} at the moment we make
+        // it, but `refs/stash` is repository-wide: a stash made anywhere else pushes ours
+        // down, and an unqualified pop would then take theirs.
+        var (main, linked) = await NewRepoWithWorktreeAsync();
+        var workspace = await NewWorkspaceAsync(main);
+
+        await RunAsync(main, "branch", "target");
+        await File.WriteAllTextAsync(Path.Combine(main, "B.txt"), "carry me\n");
+
+        // Stands in for an agent in the other worktree. GitWriter raises this after every
+        // mutation, so it fires once our stash exists and before the restore runs.
+        var previous = workspace.Writer.Mutated;
+        var interfered = false;
+
+        workspace.Writer.Mutated = path =>
+        {
+            previous?.Invoke(path);
+
+            if (interfered) return;
+            interfered = true;
+
+            File.WriteAllText(Path.Combine(linked, "A.txt"), "the agent's work\n");
+            Git.ExecuteAsync(linked, GitIntent.Write, default, "stash", "push", "-m", "the agent's stash")
+                .GetAwaiter()
+                .GetResult();
+        };
+
+        var mutation = await workspace.Branches
+            .SwitchAsync(main, "target", CheckoutStrategy.StashAndSwitch);
+
+        workspace.Writer.Mutated = previous;
+
+        Assert.True(mutation.Success, mutation.Message);
+
+        // Ours came back...
+        Assert.Equal("carry me\n", await File.ReadAllTextAsync(Path.Combine(main, "B.txt")));
+
+        // ...and theirs is untouched, rather than having been applied here and dropped.
+        var left = await workspace.Stashes.ListAsync(main);
+        Assert.Contains(left, s => s.Message == "the agent's stash");
+        Assert.DoesNotContain(left, s => s.Message.StartsWith("switching to", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task When_the_work_cannot_even_be_put_back_the_message_says_where_it_is()
     {
         // The path that matters most and is easiest to leave silent: the switch fails, so

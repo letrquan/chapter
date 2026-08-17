@@ -120,8 +120,10 @@ public sealed class WorkspaceService
         Undo = new UndoService(git, Writer);
         Staging = new StagingService(git, Writer);
         Commits = new CommitService(git, Writer, Undo);
-        Branches = new BranchService(git, Writer, Undo);
+        // Stashes before Branches: the stash-and-switch path goes through it rather than
+        // running its own `git stash`, so the sha-safe rules live in one place.
         Stashes = new StashService(git, Writer, Undo);
+        Branches = new BranchService(git, Writer, Undo, Stashes);
         Tags = new TagService(git, Writer, Undo);
     }
 
