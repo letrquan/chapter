@@ -311,6 +311,80 @@ public class RefTests : IDisposable
         Assert.Empty(await workspace.Stashes.ListAsync(main));
     }
 
+    [Fact]
+    public async Task When_the_work_cannot_even_be_put_back_the_message_says_where_it_is()
+    {
+        // The path that matters most and is easiest to leave silent: the switch fails, so
+        // the stash is compensated back — and the compensation fails too. In this app that
+        // is not far-fetched, because an agent writing to the same files in the second
+        // between the stash and the pop is the ordinary case rather than the edge one.
+        var (main, _) = await NewRepoWithWorktreeAsync();
+        var workspace = await NewWorkspaceAsync(main);
+
+        var untracked = Path.Combine(main, "New.txt");
+        await File.WriteAllTextAsync(untracked, "the user's work\n");
+
+        // Stands in for that agent. GitWriter raises this after every mutation, so it fires
+        // once the stash has emptied the tree and before the compensating pop runs; putting
+        // the file back is what makes that pop fail with "already exists, no checkout".
+        var previous = workspace.Writer.Mutated;
+        workspace.Writer.Mutated = path =>
+        {
+            previous?.Invoke(path);
+            if (!File.Exists(untracked)) File.WriteAllText(untracked, "written by an agent\n");
+        };
+
+        var mutation = await workspace.Branches
+            .SwitchAsync(main, "feature", CheckoutStrategy.StashAndSwitch);
+
+        Assert.False(mutation.Success);
+
+        // The stash is the only copy of the user's work, and the sentence has to name it.
+        // Reporting only "could not switch" would leave them looking for it in the tree.
+        Assert.Contains("stash", mutation.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("switching to feature", mutation.Message, StringComparison.Ordinal);
+
+        Assert.Single(await workspace.Stashes.ListAsync(main));
+    }
+
+    [Fact]
+    public async Task Switching_to_a_remote_branch_creates_the_local_branch_that_tracks_it()
+    {
+        // Clicking a remote row means "work on that branch", but the name it displays is not
+        // one git will check out — `git switch origin/x` fails with "a branch is expected,
+        // got remote branch". The short name is what git accepts, and accepting it is what
+        // creates the tracking branch.
+        var root = await NewRepoAsync();
+        var workspace = await NewWorkspaceAsync(root);
+
+        await RunAsync(root, "remote", "add", "origin", root);
+        await RunAsync(root, "update-ref", "refs/remotes/origin/server-only", "HEAD");
+
+        var mutation = await workspace.Branches.SwitchAsync(root, "origin/server-only");
+
+        Assert.True(mutation.Success, mutation.Message);
+        Assert.Equal("server-only", await workspace.Branches.CurrentBranchAsync(root));
+
+        var created = (await workspace.Branches.ListAsync(root)).Single(b => b.Name == "server-only");
+        Assert.Equal("origin/server-only", created.Upstream);
+    }
+
+    [Fact]
+    public async Task A_local_branch_named_like_a_remote_one_is_switched_to_as_itself()
+    {
+        // `origin/main` is a legal local branch name. Stripping the prefix off it because it
+        // looks remote would switch to an entirely different branch than the row clicked.
+        var root = await NewRepoAsync();
+        var workspace = await NewWorkspaceAsync(root);
+
+        await RunAsync(root, "branch", "origin/main");
+
+        var mutation = await workspace.Branches.SwitchAsync(root, "origin/main");
+
+        Assert.True(mutation.Success, mutation.Message);
+        Assert.Equal("origin/main", await workspace.Branches.CurrentBranchAsync(root));
+    }
+
     // -----------------------------------------------------------------------
     // Create, rename, delete
     // -----------------------------------------------------------------------

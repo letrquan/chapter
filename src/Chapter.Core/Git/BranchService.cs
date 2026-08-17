@@ -242,14 +242,51 @@ public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo
         string worktreePath, string branch, CheckoutStrategy strategy = CheckoutStrategy.Carry,
         CancellationToken ct = default)
     {
+        var target = await ResolveSwitchTargetAsync(worktreePath, branch, ct).ConfigureAwait(false);
+
         if (strategy is CheckoutStrategy.StashAndSwitch)
-            return await StashAndSwitchAsync(worktreePath, branch, ct).ConfigureAwait(false);
+            return await StashAndSwitchAsync(worktreePath, target, ct).ConfigureAwait(false);
 
         // `--` so a branch whose name looks like an option cannot become one.
         return await writer
-            .RunAsync(worktreePath, $"switch to {branch}", WriteKind.StartsOperation, ct,
-                ["switch", "--", branch])
+            .RunAsync(worktreePath, $"switch to {target}", WriteKind.StartsOperation, ct,
+                ["switch", "--", target])
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Turns what the user clicked into something <c>git switch</c> accepts.
+    ///
+    /// Clicking a remote row means "work on that branch", but the name it displays is not a
+    /// branch git will check out: <c>git switch origin/main</c> fails outright with "a branch
+    /// is expected, got remote branch". The short name is what git accepts, and doing so
+    /// creates the local tracking branch — which is exactly what was meant.
+    ///
+    /// The lookup is not skipped for a name that merely *looks* remote. A local branch may
+    /// legitimately be called <c>origin/main</c>, and stripping the prefix off that one would
+    /// switch to a different branch than the row that was clicked. So a local ref of the
+    /// requested name always wins, and the rewrite happens only when there is no such local
+    /// branch and there is a remote-tracking ref by that name.
+    /// </summary>
+    private async Task<string> ResolveSwitchTargetAsync(string worktreePath, string branch, CancellationToken ct)
+    {
+        var slash = branch.IndexOf('/');
+        if (slash <= 0) return branch;
+
+        if (await RefExistsAsync(worktreePath, $"refs/heads/{branch}", ct).ConfigureAwait(false))
+            return branch;
+
+        return await RefExistsAsync(worktreePath, $"refs/remotes/{branch}", ct).ConfigureAwait(false)
+            ? branch[(slash + 1)..]
+            : branch;
+    }
+
+    private async Task<bool> RefExistsAsync(string worktreePath, string fullRef, CancellationToken ct)
+    {
+        var result = await git.TryRunAsync(worktreePath, ct, "show-ref", "--verify", "--quiet", fullRef)
+            .ConfigureAwait(false);
+
+        return result.Success;
     }
 
     /// <summary>
@@ -271,10 +308,11 @@ public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo
         string worktreePath, string branch, CancellationToken ct)
     {
         var operation = $"stash and switch to {branch}";
+        var label = $"switching to {branch}";
 
         var stash = await writer
             .RunAsync(worktreePath, operation, WriteKind.StartsOperation, ct,
-                ["stash", "push", "--include-untracked", "-m", $"switching to {branch}"])
+                ["stash", "push", "--include-untracked", "-m", label])
             .ConfigureAwait(false);
 
         if (!stash.Success) return stash with { Operation = operation };
@@ -285,11 +323,22 @@ public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo
 
         if (!switched.Success)
         {
-            await writer
+            var putBack = await writer
                 .RunAsync(worktreePath, operation, WriteKind.WorkingTree, ct, ["stash", "pop"])
                 .ConfigureAwait(false);
 
-            return switched with { Operation = operation };
+            // The compensation can fail too, and in this app that is not far-fetched: an
+            // agent writing to the same files in the second between the stash and the pop is
+            // the ordinary case. Reporting only the switch failure there would leave the
+            // user's work sitting in a stash that nothing on screen mentions.
+            return switched with
+            {
+                Operation = operation,
+                Detail = putBack.Success
+                    ? null
+                    : $"{switched.Message} Your changes could not be put back either — " +
+                      $"they are in the stash as \"{label}\".",
+            };
         }
 
         var restored = await writer
