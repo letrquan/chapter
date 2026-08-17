@@ -94,8 +94,13 @@ public sealed record GitMutation
     {
         get
         {
-            if (Success) return $"{Operation} succeeded";
+            // Detail wins even on success, because success is not always the whole story: a
+            // stash-and-switch whose restore conflicted did switch, and reporting only
+            // "succeeded" would leave the user believing their changes came across when
+            // they are sitting in the stash. If the app worked something out worth saying,
+            // saying it beats the generic sentence.
             if (!string.IsNullOrWhiteSpace(Detail)) return Detail!;
+            if (Success) return $"{Operation} succeeded";
 
             var firstLine = FirstMeaningfulLine(StandardError);
             if (firstLine is not null) return firstLine;

@@ -36,6 +36,7 @@ import { brandMark, icons, kindLetter } from './icons'
 import { registerCSharpNavigation, setNavigateHandler } from './navigation'
 import { openPalette, close as closePalette, isOpen as isPaletteOpen } from './palette'
 import { renderPreview, cancelPreview } from './preview'
+import { openRefs, close as closeRefs, isOpen as isRefsOpen } from './refs'
 import type {
   ChangedFile,
   DiffScope,
@@ -207,6 +208,7 @@ function renderShell(): void {
           <span class="eyebrow">Changed</span>
           <span class="files-count" id="files-count"></span>
           <span class="files-stat" id="files-stat"></span>
+          <button class="icon-btn" id="refs" title="Branches, stashes and tags (Ctrl+B)">${icons.branch}</button>
           <button class="icon-btn" id="undo" title="Nothing to undo" disabled>${icons.undo}</button>
           <button class="icon-btn" id="refresh" title="Refresh (Ctrl+R)">${icons.refresh}</button>
         </div>
@@ -995,6 +997,36 @@ async function syncHunkBar(): Promise<void> {
 }
 
 /**
+ * Opens the refs overlay on the active worktree.
+ *
+ * Every ref operation is scoped to a worktree — which branch this one is on, which stash to
+ * restore into it — so there is nothing to show without one.
+ */
+function showRefs(): void {
+  if (!state.active) {
+    toast('Open a worktree first.')
+    return
+  }
+
+  // Captured rather than read later, for the reason the palette captures it: the panel's
+  // contents were read against this worktree, and acting on them after the user has moved
+  // on would switch a branch in a worktree they are no longer looking at.
+  const worktree = state.active
+
+  openRefs(worktree, {
+    // A branch mutation changes the file list, the commit view and what undo offers — the
+    // same four things staging changes, so it ends in the same place.
+    onMutated: () => afterMutation(),
+    onGoToWorktree: (path) => selectWorktree(path),
+    toast,
+  }).catch((error: unknown) => {
+    // Not `void`: this is opened from a click handler, so a rejection has nowhere to go and
+    // the button would simply appear dead — which is exactly how it failed once.
+    toast('Could not read this worktree’s refs', message(error), 'error')
+  })
+}
+
+/**
  * Re-reads whatever tab is open. Called after a mutation, where the diff on screen is now
  * describing a state the repository has left — staging a file changes both sides of it.
  */
@@ -1073,6 +1105,7 @@ const SHORTCUTS: [keys: string, what: string][] = [
   ['<kbd>Ctrl</kbd> <kbd>1</kbd>–<kbd>9</kbd>', 'Switch worktree'],
   ['<kbd>Ctrl</kbd> <kbd>P</kbd>', 'Find file'],
   ['<kbd>Ctrl</kbd> <kbd>T</kbd>', 'Find symbol'],
+  ['<kbd>Ctrl</kbd> <kbd>B</kbd>', 'Branches, stashes and tags'],
   ['<kbd>Ctrl</kbd> <kbd>D</kbd>', 'Diff or code'],
   ['<kbd>Ctrl</kbd> <kbd>S</kbd>', 'Save the open file'],
   // The three the commit view adds. This legend is the only place the app documents
@@ -1385,6 +1418,8 @@ function wireEvents(): void {
 
   document.getElementById('undo')!.addEventListener('click', () => void undoLast())
 
+  document.getElementById('refs')!.addEventListener('click', () => showRefs())
+
   document.getElementById('editor-host')!.addEventListener('click', (event) => {
     const action = (event.target as HTMLElement).closest<HTMLElement>('[data-stale]')
     if (!action) return
@@ -1562,6 +1597,14 @@ function wireKeyboard(): void {
     // A modal question is on screen; it owns the keyboard until it is answered.
     if (isConfirmOpen()) return
 
+    // The refs overlay handles its own keys on its filter field, including Escape and Tab.
+    // Letting the shortcuts below run behind it would switch worktrees out from under a
+    // panel whose rows were read against the one it was opened on.
+    if (isRefsOpen()) {
+      if (event.key === 'Escape') closeRefs()
+      return
+    }
+
     // Ctrl+S saves, from anywhere outside the editor. Monaco has its own binding for when
     // the caret is inside it, because it swallows the keystroke before this listener runs.
     if (ctrl && !event.shiftKey && event.key.toLowerCase() === 's') {
@@ -1591,6 +1634,14 @@ function wireKeyboard(): void {
     if (event.altKey && !ctrl && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
       event.preventDefault()
       stepHunk(event.key === 'ArrowDown' ? 1 : -1)
+      return
+    }
+
+    // Ctrl+B opens branches, stashes and tags. B for branch, and it is the only unclaimed
+    // letter that names the thing — Monaco takes Ctrl+K and Ctrl+L, and Ctrl+T is symbols.
+    if (ctrl && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'b') {
+      event.preventDefault()
+      showRefs()
       return
     }
 

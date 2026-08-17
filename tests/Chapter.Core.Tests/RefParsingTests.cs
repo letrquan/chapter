@@ -285,6 +285,41 @@ public class RefParsingTests
     }
 
     [Fact]
+    public void A_successful_mutation_with_something_to_add_says_it_rather_than_just_succeeded()
+    {
+        // The case this exists for: a stash-and-switch whose restore conflicted. The switch
+        // happened, so it is a success — but reporting only "succeeded" would leave the user
+        // believing their changes came across when they are still in the stash.
+        var mutation = new GitMutation
+        {
+            Operation = "stash and switch to main",
+            WorktreePath = @"C:\repo",
+            CommandLine = "git stash pop",
+            ExitCode = 0,
+            Detail = "Switched to main, but the stashed changes did not restore cleanly. "
+                     + "They are still in the stash.",
+        };
+
+        Assert.True(mutation.Success);
+        Assert.Contains("still in the stash", mutation.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("succeeded", mutation.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_ordinary_success_still_reads_as_succeeded()
+    {
+        var mutation = new GitMutation
+        {
+            Operation = "switch to main",
+            WorktreePath = @"C:\repo",
+            CommandLine = "git switch -- main",
+            ExitCode = 0,
+        };
+
+        Assert.Equal("switch to main succeeded", mutation.Message);
+    }
+
+    [Fact]
     public void The_worktree_refusal_wins_over_the_conflict_wording_around_it()
     {
         // git's switch refusal can arrive alongside checkout advice that the conflict and

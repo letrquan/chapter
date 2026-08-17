@@ -1500,6 +1500,311 @@ kbd {
 }
 
 /* ==========================================================================
+   Refs overlay — branches, stashes, tags
+
+   Shares the palette's chrome (backdrop, raised card, hint strip) because it is the
+   same kind of surface. What differs is the row: the palette's is a label and a path,
+   this one carries a badge, a tracking count and a set of actions, so it is a grid
+   rather than a flex line — the columns have to align down the list or the shas and
+   buttons wander with the length of each name.
+   ========================================================================== */
+
+.refs-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: none;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 9vh;
+  background: color-mix(in srgb, var(--bg-shell) 55%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.refs-backdrop.open {
+  display: flex;
+}
+
+.refs {
+  width: min(820px, 92vw);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-xl);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-popover);
+  overflow: hidden;
+  animation: palette-in 140ms var(--ease);
+}
+
+/* A mutation is in flight. Pointer events go rather than opacity alone: the rows are
+   about to be renumbered, and a second click during that window would be aimed at
+   positions that no longer mean what they did. */
+.refs-backdrop.busy .refs {
+  pointer-events: none;
+  opacity: 0.62;
+}
+
+.refs-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 12px 16px 10px;
+}
+
+.refs-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.refs-subtitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.refs-subtitle strong {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.refs-sections {
+  margin: 0 16px;
+}
+
+.refs-filter {
+  margin: 10px 16px 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.refs-filter:focus {
+  border-color: var(--accent-ring);
+}
+
+.refs-filter::placeholder {
+  color: var(--text-faint);
+}
+
+/* Said once at the top rather than on every disabled row: during a merge or rebase
+   every switch is refused for the same reason. */
+.refs-notice {
+  margin: 10px 16px 0;
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--mod) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mod) 34%, transparent);
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+.refs-list {
+  max-height: 44vh;
+  overflow-y: auto;
+  padding: 6px 11px;
+}
+
+.refs-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, auto) auto auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 5px 5px 6px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.refs-row:hover {
+  background: var(--bg-hover);
+}
+
+.refs-row.selected {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
+}
+
+.refs-icon {
+  display: flex;
+  color: var(--text-faint);
+}
+
+.refs-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+/* The commit subject. Lowest priority in the row — it is what tells two similarly
+   named branches apart, and nothing more, so it yields all its width first. */
+.refs-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-align: right;
+}
+
+.refs-sha {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+/* Holds a grid column open where a row has no badge or no tracking count. Without it the
+   cells after the gap shift one column left and the subject and sha wander from row to
+   row — which is exactly what the fixed columns exist to prevent. */
+.refs-badge-none {
+  display: block;
+  width: 0;
+}
+
+.refs-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.refs-badge.current {
+  background: color-mix(in srgb, var(--add) 16%, transparent);
+  color: var(--add);
+}
+
+/* The state this app runs into constantly and other clients rarely: the branch is open
+   in a different worktree, so it cannot be switched to here. Coloured as information
+   rather than as an error — there is nothing wrong, and the row offers the way there. */
+.refs-badge.elsewhere {
+  background: color-mix(in srgb, var(--rename) 16%, transparent);
+  color: var(--rename);
+}
+
+.refs-badge.remote {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  color: var(--text-faint);
+}
+
+.refs-track {
+  display: flex;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.refs-ahead {
+  color: var(--add);
+}
+
+.refs-behind {
+  color: var(--del);
+}
+
+.refs-track.level {
+  color: var(--text-faint);
+}
+
+.refs-track.gone {
+  color: var(--mod);
+}
+
+/* Held open for the selected row so the keyboard path shows what it can do, and on
+   hover for the pointer one. Otherwise the actions would be the loudest thing in a
+   list whose job is to be read. */
+.refs-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+}
+
+.refs-row:hover .refs-actions,
+.refs-row.selected .refs-actions {
+  opacity: 1;
+}
+
+.refs-actions .icon-btn {
+  width: 22px;
+  height: 22px;
+}
+
+.refs-empty {
+  padding: 22px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 12.5px;
+}
+
+.refs-foot {
+  display: flex;
+  gap: 6px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.refs-hint {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.refs-hint kbd {
+  margin-right: 3px;
+}
+
+/* The inline question — a name to type, a message to write. Replaces the footer rather
+   than stacking a second dialog on the overlay, which would take the keyboard from it. */
+.refs-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.refs-prompt-label {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+.refs-prompt-row {
+  display: flex;
+  gap: 6px;
+}
+
+.refs-prompt-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.refs-prompt-input:focus {
+  border-color: var(--accent-ring);
+}
+
+/* ==========================================================================
    Toast
    ========================================================================== */
 

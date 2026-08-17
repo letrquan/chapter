@@ -60,6 +60,21 @@ export const icons = {
 
   /** Key: shown only where a credential is being asked for. */
   key: svg('<circle cx="5" cy="11" r="2.5"/><path d="M6.8 9.2 12.5 3.5M10.5 5.5l1.5 1.5M12.5 3.5 14 5"/>', 13),
+
+  /** Rename: a pencil, the one edit affordance that is not destructive. */
+  pencil: svg('<path d="M11.2 2.3a1.4 1.4 0 0 1 2 2L5.6 11.9l-2.7.8.8-2.7Z"/><path d="M10 3.5l2.5 2.5"/>', 13),
+
+  /**
+   * Stash: a tray with something set down into it. Deliberately not the bin used for
+   * discard — a stash puts work aside, and the two must not read as the same action.
+   */
+  stash: svg('<path d="M1.75 9.5h3l.9 1.6h4.7l.9-1.6h3"/>' +
+    '<path d="M3.3 4.2 1.9 9.1a1.5 1.5 0 0 0-.15.65v2.5a1.5 1.5 0 0 0 1.5 1.5h9.5a1.5 1.5 0 0 0 1.5-1.5v-2.5' +
+    'a1.5 1.5 0 0 0-.15-.65L12.7 4.2a1 1 0 0 0-.95-.7H4.25a1 1 0 0 0-.95.7Z"/>', 13),
+
+  /** Tag: a label with its eyelet, which is what a tag is. */
+  tag: svg('<path d="M7.2 1.9H2.6a.7.7 0 0 0-.7.7v4.6a1 1 0 0 0 .3.7l6.2 6.2a1 1 0 0 0 1.4 0l4.3-4.3' +
+    'a1 1 0 0 0 0-1.4L7.9 2.2a1 1 0 0 0-.7-.3Z"/><circle cx="5" cy="5" r="1"/>', 13),
 }
 
 /**
