@@ -249,6 +249,14 @@ function render(): void {
         ? stashRows(query)
         : tagRows(query)
 
+  // Both the list and the footer are replaced wholesale below, which detaches whatever
+  // inside them had focus — a row's action button, most often. Focus then falls to
+  // <body>, outside the overlay the key handler is bound to, and the arrows and Enter go
+  // dead again: exactly the failure moving the handler onto the panel was meant to end,
+  // one keystroke later. Note it here and hand focus back afterwards.
+  const focused = document.activeElement
+  const losesFocus = focused instanceof HTMLElement && (list.contains(focused) || footer.contains(focused))
+
   if (rows.length === 0) {
     list.innerHTML = `<div class="refs-empty">${esc(emptyMessage(query))}</div>`
   } else {
@@ -263,6 +271,9 @@ function render(): void {
   }
 
   renderFooter()
+
+  // The filter is the one thing in here that survives a render, so it is where focus goes.
+  if (losesFocus && !overlay!.contains(document.activeElement)) filter.focus()
 }
 
 /**
