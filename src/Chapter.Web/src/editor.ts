@@ -353,6 +353,14 @@ export function initEditors(container: HTMLElement): void {
   // focus, so a global listener never sees the one keystroke that matters most here.
   codeEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => saveHandler?.())
 
+  // Ctrl+D needs the same treatment, and needs it on every pane. Monaco binds it to
+  // addSelectionToNextFindMatch, so with the caret in the editor the window listener never
+  // ran and the Diff/Code toggle went dead — one-way, since switching to Code puts focus
+  // in the editor and there is then no way back to the diff without reaching for the mouse.
+  for (const editor of [codeEditor, diffEditor.getOriginalEditor(), diffEditor.getModifiedEditor()]) {
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyD, () => modeToggleHandler?.())
+  }
+
   // automaticLayout polls on a timer; a ResizeObserver reacts immediately and only when
   // the pane actually changes size, which matters when dragging the splitters.
   const observer = new ResizeObserver(() => layoutEditors())
@@ -365,6 +373,12 @@ let saveHandler: (() => void) | null = null
 
 export function setSaveHandler(handler: () => void): void {
   saveHandler = handler
+}
+
+let modeToggleHandler: (() => void) | null = null
+
+export function setModeToggleHandler(handler: () => void): void {
+  modeToggleHandler = handler
 }
 
 /**

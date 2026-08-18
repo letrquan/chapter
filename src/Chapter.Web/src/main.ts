@@ -17,6 +17,7 @@ import {
   currentText,
   markSaved,
   setSaveHandler,
+  setModeToggleHandler,
   type ViewState,
 } from './editor'
 import './styles.css'
@@ -1615,6 +1616,19 @@ function wireSplitter(id: string, variable: string, min: number, max: number): v
   })
 }
 
+/**
+ * Flips the open tab between its diff and its code.
+ *
+ * Lives here rather than inline in the key handler because there are two ways in: the
+ * window shortcut, and Monaco's own binding for when the caret is in the editor and the
+ * window never sees the keystroke at all.
+ */
+function toggleMode(): void {
+  const entry = state.active ? worktreeState(state.active) : null
+  const tab = entry?.tabs.find((t) => t.path === entry.activePath)
+  void setMode(tab?.mode === 'diff' ? 'code' : 'diff')
+}
+
 function wireKeyboard(): void {
   window.addEventListener('keydown', (event) => {
     const ctrl = event.ctrlKey || event.metaKey
@@ -1698,9 +1712,7 @@ function wireKeyboard(): void {
 
     if (ctrl && !event.shiftKey && event.key.toLowerCase() === 'd') {
       event.preventDefault()
-      const entry = state.active ? worktreeState(state.active) : null
-      const tab = entry?.tabs.find((t) => t.path === entry.activePath)
-      void setMode(tab?.mode === 'diff' ? 'code' : 'diff')
+      toggleMode()
       return
     }
 
@@ -1801,6 +1813,7 @@ async function start(): Promise<void> {
   })
 
   setSaveHandler(() => void saveActiveFile())
+  setModeToggleHandler(() => toggleMode())
   onDiffSelectionChanged(() => updateSelectionState())
 
   // The tab's dot has to track the model, not the load: a keystroke makes a file dirty
