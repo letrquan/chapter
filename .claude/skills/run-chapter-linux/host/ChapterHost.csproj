@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Must match Chapter.Core; net10.0 cannot reference a net10.0-windows assembly.
+         Nothing here touches a Windows-only API, so it still runs on Linux. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ChapterHost</RootNamespace>
+    <!-- Chapter.Core is annotated Windows-only for the registry and DPAPI paths, which
+         this host never calls. -->
+    <NoWarn>CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../../src/Chapter.Core/Chapter.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="wwwroot-shim/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

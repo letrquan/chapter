@@ -14,8 +14,13 @@ All paths below are relative to the repo root (the directory holding
 `chapter.slnx`). The driver lives at
 `.claude/skills/run-chapter/driver.ps1`.
 
-**Windows only.** This is WPF plus the Edge WebView2 runtime; there is no Linux
-or macOS path to make work.
+**Windows only.** This is WPF plus the Edge WebView2 runtime, and neither runs
+anywhere else.
+
+On Linux, use the `run-chapter-linux` skill. It cannot run this executable
+either — it replaces the window with Electron and the WebView2 message pipe with
+a WebSocket, and drives the same `Chapter.Core` and the same front-end
+underneath. Prefer this skill wherever you have Windows: it is the real app.
 
 ## Prerequisites
 
