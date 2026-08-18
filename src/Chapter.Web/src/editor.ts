@@ -14,6 +14,58 @@ self.MonacoEnvironment = {
   getWorker: () => new Worker('/editor.worker.js', { type: 'module' }),
 }
 
+/*
+ * Monaco's TypeScript, JSON, CSS and HTML language services answer from workers of their
+ * own — ts.worker.js and friends — which this build deliberately does not produce. The one
+ * worker above is the generic editor worker, so every model in one of those languages asked
+ * it for getSyntacticDiagnostics, provideInlayHints, getNavigationTree and the rest, and
+ * each unanswered call arrived as a stacked error toast the moment a .ts file was opened.
+ *
+ * Turning the worker-backed providers off is the fix rather than shipping the workers:
+ * semantic navigation here is C#-only and served by the backend index (see navigation.ts),
+ * and a review tool opening one file out of a repository has neither that file's tsconfig
+ * nor its node_modules — TypeScript's own diagnostics would be red squiggles under half the
+ * imports in the file, every time. Tokenisation is Monarch on the main thread and is not
+ * touched, so every language still highlights exactly as before.
+ */
+const NO_LANGUAGE_SERVICE = {
+  completionItems: false,
+  hovers: false,
+  documentSymbols: false,
+  definitions: false,
+  references: false,
+  documentHighlights: false,
+  rename: false,
+  colors: false,
+  foldingRanges: false,
+  diagnostics: false,
+  selectionRanges: false,
+  documentFormattingEdits: false,
+  documentRangeFormattingEdits: false,
+  signatureHelp: false,
+  onTypeFormattingEdits: false,
+  codeActions: false,
+  inlayHints: false,
+  links: false,
+}
+
+// The top-level namespaces, not monaco.languages.*: those moved in 0.56 and the old
+// spellings are now stubs typed `{ deprecated: true }` that silently do nothing.
+// razor is in LanguageMap too, so .razor and .cshtml reach the HTML service.
+for (const defaults of [
+  monaco.typescript.typescriptDefaults,
+  monaco.typescript.javascriptDefaults,
+  monaco.json.jsonDefaults,
+  monaco.css.cssDefaults,
+  monaco.css.scssDefaults,
+  monaco.css.lessDefaults,
+  monaco.html.htmlDefaults,
+  monaco.html.handlebarDefaults,
+  monaco.html.razorDefaults,
+]) {
+  defaults.setModeConfiguration(NO_LANGUAGE_SERVICE)
+}
+
 const DARK = 'chapter-dark'
 const LIGHT = 'chapter-light'
 

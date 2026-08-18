@@ -147,12 +147,13 @@ Every one of these cost time in a real session.
 - **Switching worktree restores that worktree's previously-open tabs
   asynchronously.** A capture taken immediately after the click can still show
   "Nothing open" while tabs are on their way in. Wait, then re-shot.
-- **Opening a `.ts`/`.tsx` file raises stacked error toasts** reading
-  `Missing requestHandler or method: getSyntacticDiagnostics`. That is an app
-  bug, not a driver failure: `src/Chapter.Web/src/editor.ts` returns the generic
-  `editor.worker.js` for every worker label while the full `monaco-editor`
-  import pulls in the TypeScript language service. Prefer a `.md` or `.cs` file
-  when you just need a diff on screen.
+- **Opening a `.ts`/`.tsx` file used to raise stacked error toasts** reading
+  `Missing requestHandler or method: getSyntacticDiagnostics`. Fixed:
+  `src/Chapter.Web/src/editor.ts` now turns off the worker-backed providers for
+  TypeScript, JSON, CSS and HTML, since this build ships only the generic
+  `editor.worker.js` and semantic navigation here is C#-only anyway.
+  Tokenisation is unaffected, so every language still highlights. Any file type
+  is safe to open.
 - **`quit` force-kills after a 3s grace period.** If a file is open with unsaved
   edits, that loses them.
 
