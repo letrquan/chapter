@@ -39,6 +39,7 @@ import { renderPreview, cancelPreview } from './preview'
 import { openRefs, close as closeRefs, isOpen as isRefsOpen } from './refs'
 import type {
   ChangedFile,
+  DiffBase,
   DiffScope,
   DiffSide,
   RepoInfo,
@@ -399,12 +400,36 @@ function renderFiles(restoreSaved = false): void {
       : `<span class="stat-add">+${changes.totalAdded}</span><span class="stat-del">−${changes.totalRemoved}</span>`
 
   if (changes.files.length === 0) {
-    list.innerHTML = `<div class="files-empty">No changes against<br />${esc(changes.base.description)}.</div>`
+    list.innerHTML = `<div class="files-empty">${esc(emptyChangesMessage(changes.base))}</div>`
     return
   }
 
   list.innerHTML = changes.files.map((file) => fileRow(file, entry.activePath === file.path)).join('')
   list.scrollTop = restoreSaved ? entry.filesScroll : currentScroll
+}
+
+/**
+ * What an empty file list says.
+ *
+ * `base.description` is a label — it sits under the count as "merge-base with main" — and
+ * only one of its four forms survives being dropped into "No changes against ___.". The
+ * others produced "No changes against committed since main." and "No changes against
+ * uncommitted changes.", which are not sentences. Written out per scope instead, the same
+ * way the refs panel writes out its own empty lists.
+ */
+function emptyChangesMessage(base: DiffBase): string {
+  const branch = base.branchName
+
+  switch (base.scope) {
+    case 'uncommitted':
+      return 'Nothing uncommitted — the working tree is clean.'
+    case 'committed':
+      return branch ? `Nothing committed since ${branch}.` : 'Nothing committed since the base.'
+    case 'lastCommit':
+      return 'The last commit changed nothing.'
+    default:
+      return `No changes against ${base.description}.`
+  }
 }
 
 function fileRow(file: ChangedFile, isActive: boolean): string {
