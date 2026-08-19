@@ -202,6 +202,22 @@ branch another worktree holds is refused by git — `fatal: 'x' is already used 
 worktree instead. It has its own failure kind (`CheckedOutElsewhere`) rather than being filed
 under "would lose changes", because nothing is at risk and there is nothing to force.
 
+**Worktrees are managed from the same panel, and never from inside themselves.** Adding,
+removing, moving, locking and pruning all run in the repository's *main* worktree, whichever
+one you are looking at. `git worktree remove` is perfectly willing to delete the directory the
+command is running in, which leaves git standing in a deleted working directory — undefined
+on POSIX, and impossible on Windows, where a directory in use cannot be deleted at all. The
+main worktree is the one git refuses to remove or move, so the host of the command is never
+its target. Removing the worktree you are standing in is an ordinary thing to want here, so
+the app lets go of its file watcher and symbol index before git runs rather than after, and
+moves you to a sibling in the same repository afterwards.
+
+A new worktree's path is suggested by following whatever layout the repository already uses —
+`.worktrees/` nested inside it, or siblings beside it — and where there is no precedent it
+suggests a sibling, because a worktree nested inside the main one appears in that worktree's
+own `git status` as an untracked directory. In this app that means the repository you are
+reviewing grows a phantom change that is really another agent's entire checkout.
+
 **Nothing destructive happens without saying whether it can be undone.** One confirmation
 dialog covers all of it, and it states recoverability every time rather than relying on a
 red button to imply it. Discarding is *permanent* and says so — working-tree content that
@@ -215,6 +231,17 @@ that commit, and a dropped stash is only unreferenced, so `git stash store` puts
 back with its contents intact. Those inverses name a ref rather than a commit, which makes
 them correct however far HEAD has moved — so unlike the commit undo they are not refused when
 an agent commits in between, which in this app is the expected case rather than a rare one.
+
+Removing a worktree is *permanent* both times it asks, and the second question exists because
+the two removals lose different things. Git's own check before it refuses is `status`, which
+says nothing about ignored files — so a worktree whose only untracked content is a `.env` and
+a `node_modules` is "clean" to it and is deleted without a murmur. Nothing in the app puts a
+directory back, which is why removal records no undo point at all. Pruning gets the third
+answer the dialog can give — nothing is lost, because the directories it forgets are already
+gone — and shows `git worktree prune --dry-run` in the dialog, since it is the one action
+here that names nothing on screen. A *locked* worktree is asked about separately rather than
+overridden: git wants `--force --force` there and the app passes one, because a lock is
+somebody's explicit instruction and the way past it is to unlock it.
 
 **Editing is conditional, and unsaved work is never overwritten.** The diff stays read-only
 — its left pane is a commit — while the code view becomes editable when the backend confirms
@@ -301,6 +328,7 @@ providers for it. Nothing above that seam is C#-specific.
 | `Ctrl` `P` | Go to file |
 | `Ctrl` `T` | Go to symbol |
 | `Ctrl` `B` | Branches, stashes and tags |
+| `Ctrl` `Shift` `B` | Worktrees: add, move, lock, remove, prune |
 | `F12` | Go to definition (C#) |
 | `Shift` `F12` | Find usages (C#) |
 | `Ctrl` `D` | Toggle diff / code |
@@ -388,7 +416,7 @@ fail the whole request.
 
 No build or test runner · no fetch/pull/push, and so no pushing a tag either · no merge or
 rebase · no conflict-resolution UI beyond detecting and listing conflicted files · no
-history or blame view · no worktree create or delete · no cross-worktree comparison · no
+history or blame view · no cross-worktree comparison · no
 semantic (MSBuild) engine · no semantic navigation for languages other than C# — diff and
 browse work for everything Monaco tokenises.
 

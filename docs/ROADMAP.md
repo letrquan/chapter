@@ -392,14 +392,71 @@ The credential story is the hard part, not the commands.
 
 The natural home-turf feature — the app is already worktree-shaped.
 
-- [ ] Create worktree from an existing branch or a new one
-- [ ] Remove worktree *(destructive)*
-- [ ] **Prune stale worktrees** — `heat` has a prunable one right now, and today the app
+**Complete.** It lives as a fourth section of the refs overlay rather than in the rail. The
+rail *is* the worktree list, which is the argument for putting it there and does not survive
+contact with the widths involved: it is 160px of single-button rows, with nowhere to put four
+actions per worktree and no honest way to ask "where should this one go?". The overlay
+already had the row grid, the filter, the inline prompt, the confirmation and the keyboard.
+
+Two facts decided more than the commands did, and both came from running git:
+
+- **Every mutation runs in the repository's main worktree**, never in the one being acted on.
+  `git worktree remove` will happily delete the directory the command is running in — it
+  succeeded in the experiment — leaving git standing in a deleted CWD, which is undefined on
+  POSIX and impossible on Windows, where an in-use directory cannot be deleted at all. Git
+  refuses to remove or move the main worktree, so running from there means the host is never
+  the target.
+- **`worktree prune --verbose` reports on stderr**, not stdout. Reading stdout gives a
+  confident, permanently empty preview: a dialog saying "nothing to prune" beside a button
+  that then prunes four worktrees.
+
+- [x] Create worktree from an existing branch or a new one
+      → One question, not two: the panel already holds the branch list, so it knows whether
+      the name is a checkout or a creation, and asking the user to classify something the app
+      can see is a question with a right answer. The destination is checked before git runs —
+      the one place in this codebase that pre-empts git deliberately, because
+      `worktree add -b` creates the branch *first* and only then finds the path occupied, so
+      the retry fails with a second error about something the user never did.
+- [x] Remove worktree *(destructive)*
+      → Attempted without `--force`, so git decides whether tracked work is at risk, and its
+      refusal raises a second question about somebody's work in progress. Both say
+      **permanent**, and the first one said "undoable" until review caught it: the argument
+      was that git refuses whenever anything uncommitted exists, and git's check is `status`,
+      which does not report ignored files. A worktree whose only untracked content is a
+      `.env` and a `node_modules` is clean to that check and is deleted in silence — and
+      nothing here reverses a deleted directory anyway, which is why removal records no undo
+      point. A **locked**
+      worktree is asked about first and separately: git wants `--force --force` there and the
+      app passes one, because a lock is somebody's explicit instruction and the way past it
+      is to unlock, not to override them with a flag on something else.
+      → Removing the worktree you are standing in is an ordinary case rather than an edge
+      one, and it is the case the plumbing is shaped around: the watcher and symbol index are
+      released *before* git runs (a directory anything holds open is undeletable on Windows),
+      the membership check happens before that release (or the app refuses its own request),
+      and the repository is resolved before the mutation (afterwards there is no directory
+      left to ask git about, and the rail would go on showing what was just deleted).
+- [x] **Prune stale worktrees** — `heat` has a prunable one right now, and today the app
       can only display it, not fix it
-- [ ] Lock / unlock, with reason
-- [ ] Move worktree
-- [ ] Sensible default paths — support both layouts already handled (`.worktrees/` nested
+      → With a dry run first, which is the cross-cutting "preview anything destructive" item
+      in its first use. Prune is the one action here with no row to name: it acts on records
+      whose directories are already gone. It also earned `confirm.ts` a third recoverability
+      answer — neither "undoable" nor "permanent" is true of it, and putting the app's loudest
+      warning on its least consequential action is how a warning starts being read past.
+- [x] Lock / unlock, with reason
+- [x] Move worktree
+      → Where it went is deliberately not passed back to the window. Git resolves the typed
+      destination — against the main worktree, into the platform's separators — so the string
+      the panel holds frequently is not the path that now exists. The window re-reads the
+      list and takes the one that was not there before, scoped to that repository: every
+      worktree of every *other* repository is also "new" by that test, and the unscoped
+      version dropped the user into an unrelated project.
+- [x] Sensible default paths — support both layouts already handled (`.worktrees/` nested
       and scattered siblings)
+      → Follows whatever the repository already does, and picks the sibling layout where
+      there is no precedent: a worktree nested inside the main one shows up in that
+      worktree's own `git status` as an untracked directory, which in this app means the
+      repository being reviewed grows a phantom change that is really another agent's entire
+      checkout.
 
 ## Phase 8 — Agent-workflow differentiators
 
@@ -430,6 +487,11 @@ Nothing else on this list is unique to this app. These are.
       `core.autocrlf=true` one for hunk patches), `CommitMessageTests` (no repository at
       all) and `CommitBridgeTests` (the JSON seam, where a rename in `Messages.cs` becomes
       a missing field in `protocol.ts` rather than a compile error).
+      Phase 7 added `WorktreeTests`, which creates and destroys directories rather than refs
+      and is the first suite where a wrong path deletes somebody's work — every fixture path
+      is registered for cleanup before it exists, and `RealRepoTests` stopped constructing a
+      `WorktreeService` by hand so that reading a worktree list and writing to one come from
+      the same place the app builds them.
       Phase 3 added a **two-worktree** fixture, because half of what it had to get right is
       only observable with one: which worktree holds a branch, that the stash is shared, that
       a rename follows into the other worktree. Its fixtures also pin `core.autocrlf=false`
@@ -437,6 +499,10 @@ Nothing else on this list is unique to this app. These are.
       every line ending on checkout and fails content assertions for reasons unrelated to
       what is under test.
 - [ ] **Dry-run / preview** for anything destructive
+      *(One exists: pruning worktrees shows `worktree prune --dry-run` in the confirmation
+      before the button does anything, which is the shape to copy. It is the case where a
+      preview is not a nicety — the action names nothing on screen, because what it removes
+      is the record of directories that have already gone.)*
 - [ ] **Long-running operations** — the bridge has a 60s call timeout (`bridge.ts`); clone,
       fetch, and push will exceed it. Needs a progress protocol, not a longer timeout.
       *(Phase 2 built the first one and it is the shape to copy: the call returns an id
@@ -468,9 +534,12 @@ Nothing else on this list is unique to this app. These are.
    to need less invention than expected and more care than expected: git already does the
    right thing most of the time, and the work was in not getting in its way, then in making
    sure the one path where the user's work exists only in a stash can never end silently.
-5. **Phase 7** — **Next**: worktree management. Cheap, and this app should obviously own it.
-6. **Phase 5** — push/pull. Blocked on credentials, so start that spike early. It also now
-   owns tag pushing, which Phase 3 deliberately left behind.
+5. ~~**Phase 7**~~ — done. Worktree management. Cheap as predicted, and the cost was not in
+   the git commands but in everything the app holds open: a worktree is a directory with a
+   file watcher, a symbol index, editor models and the active selection all keyed to its
+   path, and removing one means letting go of all of them in the right order.
+6. **Phase 5** — **Next**: push/pull. Blocked on credentials, so start that spike early. It
+   also now owns tag pushing, which Phase 3 deliberately left behind.
 7. **Phase 4 + 6** — history and conflicts. Both large; conflicts especially.
 8. **Phase 8** — the differentiators, once the fundamentals are solid.
 
