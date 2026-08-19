@@ -30,10 +30,23 @@ export interface ConfirmOptions {
    * `undoable` gets a plain note; `permanent` gets the warning treatment and a slower
    * path to the button. Discarding unstaged work is the permanent case that people
    * routinely assume is not, which is the whole reason this parameter exists.
+   *
+   * `harmless` is the third honest answer and was added for pruning worktrees: neither of
+   * the others is true of it. Nothing can be undone, because nothing was destroyed — the
+   * directories were already gone and only git's record of them is removed. Saying
+   * "permanent" there would put the app's loudest warning on its least consequential
+   * action, and a warning that cries wolf is worse than none.
    */
-  recovery: 'undoable' | 'permanent'
+  recovery: 'undoable' | 'permanent' | 'harmless'
   /** Extra detail — a file list, a branch name. Rendered smaller, below the body. */
   detail?: string[]
+}
+
+/** The sentence each kind of recoverability gets. Stated on every dialog, never implied. */
+const RECOVERY: Record<ConfirmOptions['recovery'], string> = {
+  undoable: 'This can be undone afterwards.',
+  permanent: 'This cannot be undone — the content is not in git, so there is nothing to recover it from.',
+  harmless: 'Nothing you can lose is removed — only git’s record of directories that are already gone.',
 }
 
 let active: (() => void) | null = null
@@ -71,12 +84,8 @@ export function confirm(options: ConfirmOptions): Promise<boolean> {
         <div class="confirm-title" id="confirm-title">${esc(options.title)}</div>
         <div class="confirm-body">${esc(options.body)}</div>
         ${detail}
-        <div class="confirm-recovery ${permanent ? 'permanent' : 'undoable'}">
-          ${
-            permanent
-              ? 'This cannot be undone — the content is not in git, so there is nothing to recover it from.'
-              : 'This can be undone afterwards.'
-          }
+        <div class="confirm-recovery ${options.recovery}">
+          ${RECOVERY[options.recovery]}
         </div>
         <div class="confirm-actions">
           <button class="btn" data-confirm-cancel>Cancel</button>

@@ -210,7 +210,8 @@ function renderShell(): void {
           <span class="eyebrow">Changed</span>
           <span class="files-count" id="files-count"></span>
           <span class="files-stat" id="files-stat"></span>
-          <button class="icon-btn" id="refs" title="Branches, stashes and tags (Ctrl+B)">${icons.branch}</button>
+          <button class="icon-btn" id="refs"
+                  title="Branches, worktrees, stashes and tags (Ctrl+B)">${icons.branch}</button>
           <button class="icon-btn" id="undo" title="Nothing to undo" disabled>${icons.undo}</button>
           <button class="icon-btn" id="refresh" title="Refresh (Ctrl+R)">${icons.refresh}</button>
         </div>
@@ -312,7 +313,9 @@ function renderRail(): void {
         <button class="repo-head" data-toggle-repo="${esc(repo.path)}">
           <span class="chevron">${icons.chevron}</span>
           <span class="repo-name">${esc(repo.name)}</span>
-          <span class="repo-remove" data-remove-repo="${esc(repo.path)}" title="Close repository">${icons.close}</span>
+          <span class="repo-action" data-add-worktree="${esc(repo.path)}"
+                title="Manage this repository’s worktrees">${icons.plus}</span>
+          <span class="repo-action" data-remove-repo="${esc(repo.path)}" title="Close repository">${icons.close}</span>
         </button>
         <div class="repo-worktrees">${rows}</div>
       </div>`
@@ -1025,10 +1028,11 @@ async function syncHunkBar(): Promise<void> {
 /**
  * Opens the refs overlay on the active worktree.
  *
- * Every ref operation is scoped to a worktree — which branch this one is on, which stash to
- * restore into it — so there is nothing to show without one.
+ * Every operation in it is scoped to a worktree — which branch this one is on, which stash
+ * to restore into it, which repository's worktrees to manage — so there is nothing to show
+ * without one.
  */
-function showRefs(): void {
+function showRefs(section?: 'branches' | 'worktrees' | 'stashes' | 'tags'): void {
   if (!state.active) {
     toast('Open a worktree first.')
     return
@@ -1039,17 +1043,88 @@ function showRefs(): void {
   // on would switch a branch in a worktree they are no longer looking at.
   const worktree = state.active
 
-  openRefs(worktree, {
-    // A branch mutation changes the file list, the commit view and what undo offers — the
-    // same four things staging changes, so it ends in the same place.
-    onMutated: () => afterMutation(),
-    onGoToWorktree: (path) => selectWorktree(path),
-    toast,
-  }).catch((error: unknown) => {
+  openRefs(
+    worktree,
+    {
+      // A branch mutation changes the file list, the commit view and what undo offers — the
+      // same four things staging changes, so it ends in the same place.
+      onMutated: () => afterMutation(),
+      onGoToWorktree: (path) => selectWorktree(path),
+      onWorktreeGone: (path) => worktreeGone(path),
+      toast,
+    },
+    section,
+  ).catch((error: unknown) => {
     // Not `void`: this is opened from a click handler, so a rejection has nowhere to go and
     // the button would simply appear dead — which is exactly how it failed once.
     toast('Could not read this worktree’s refs', message(error), 'error')
   })
+}
+
+/**
+ * Lets go of a worktree that no longer exists — removed, pruned, or moved elsewhere.
+ *
+ * Everything the window holds is keyed by path: editor models, the commit draft, the tab
+ * list, the change cache, the active selection. None of it survives the directory going, and
+ * none of it notices on its own — the first sign would be a bridge call failing against a
+ * path nothing on screen admits is dead.
+ */
+async function worktreeGone(path: string): Promise<void> {
+  const wasActive = state.active === path
+
+  disposeWorktreeModels(path)
+  forgetDraft(path)
+  state.byWorktree.delete(path)
+
+  const repo = [...state.worktrees.entries()].find(([, list]) =>
+    list.some((worktree) => worktree.path === path),
+  )?.[0]
+
+  const before = new Set((repo ? state.worktrees.get(repo) : [])?.map((w) => w.path) ?? [])
+
+  if (wasActive) {
+    // Cleared before anything is re-read, so no panel is left describing the worktree that
+    // has gone while the window moves to another one.
+    state.active = null
+    resetCommitPanel()
+    clearStaleBanner()
+    hideHunkBar()
+  }
+
+  if (repo) await loadWorktrees(repo)
+
+  if (!wasActive) {
+    renderRail()
+    return
+  }
+
+  // Everything below is scoped to the repository the worktree belonged to. Both questions —
+  // "did one appear?" and "where do we go now?" — are answered wrongly by looking at the
+  // whole rail: every worktree of every *other* repository is also one that was not in
+  // `before`, so the answer would be whichever project happens to be listed first.
+  const siblings = repo ? state.worktrees.get(repo) ?? [] : []
+  const here = orderedWorktrees().filter((worktree) =>
+    siblings.some((sibling) => sibling.path === worktree.path),
+  )
+
+  // A move leaves exactly one worktree in this repository that was not there before, and
+  // that is where the user's work went. Worked out by comparing the lists rather than taken
+  // from what they typed into the move box: git resolves that string — against the main
+  // worktree, and into the platform's separators — so the typed form frequently is not the
+  // path that now exists, and following it would land nowhere.
+  const arrived = here.find((worktree) => !before.has(worktree.path))
+
+  const next = arrived ?? here[0] ?? orderedWorktrees()[0]
+
+  if (next) {
+    await selectWorktree(next.path)
+    return
+  }
+
+  renderRail()
+  renderFiles()
+  renderTabs()
+  clearEditor()
 }
 
 /**
@@ -1132,6 +1207,7 @@ const SHORTCUTS: [keys: string, what: string][] = [
   ['<kbd>Ctrl</kbd> <kbd>P</kbd>', 'Find file'],
   ['<kbd>Ctrl</kbd> <kbd>T</kbd>', 'Find symbol'],
   ['<kbd>Ctrl</kbd> <kbd>B</kbd>', 'Branches, stashes and tags'],
+  ['<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>B</kbd>', 'Worktrees: add, remove, prune'],
   ['<kbd>Ctrl</kbd> <kbd>D</kbd>', 'Diff or code'],
   ['<kbd>Ctrl</kbd> <kbd>S</kbd>', 'Save the open file'],
   // The three the commit view adds. This legend is the only place the app documents
@@ -1444,7 +1520,7 @@ function wireEvents(): void {
 
   document.getElementById('undo')!.addEventListener('click', () => void undoLast())
 
-  document.getElementById('refs')!.addEventListener('click', () => showRefs())
+  document.getElementById('refs')!.addEventListener('click', () => showRefs('branches'))
 
   document.getElementById('editor-host')!.addEventListener('click', (event) => {
     const action = (event.target as HTMLElement).closest<HTMLElement>('[data-stale]')
@@ -1470,6 +1546,13 @@ function wireEvents(): void {
     if (remove) {
       event.stopPropagation()
       void removeRepo(remove.dataset.removeRepo!)
+      return
+    }
+
+    const manage = target.closest<HTMLElement>('[data-add-worktree]')
+    if (manage) {
+      event.stopPropagation()
+      void manageWorktrees(manage.dataset.addWorktree!)
       return
     }
 
@@ -1535,6 +1618,32 @@ function wireEvents(): void {
   wireSplitter('split-rail', '--rail-w', 160, 420)
   wireSplitter('split-files', '--files-w', 200, 600)
   wireKeyboard()
+}
+
+/**
+ * Opens the worktree section for one repository, from its header in the rail.
+ *
+ * The panel is scoped to a worktree throughout — it is where the branch list, the stash and
+ * the repository all come from — so managing another repository's worktrees means being in
+ * one of them first. Switching is done here, visibly, rather than by handing the panel a
+ * path from a repository the rest of the window is not looking at: every action in it would
+ * then apply somewhere other than where the user believes they are.
+ */
+async function manageWorktrees(repoPath: string): Promise<void> {
+  const worktrees = state.worktrees.get(repoPath) ?? []
+  const here = worktrees.some((worktree) => worktree.path === state.active)
+
+  if (!here) {
+    const target = worktrees.find((worktree) => worktree.isUsable)
+    if (!target) {
+      toast('No usable worktree in this repository', 'Open one before managing the rest.', 'error')
+      return
+    }
+
+    await selectWorktree(target.path)
+  }
+
+  showRefs('worktrees')
 }
 
 async function removeRepo(repoPath: string): Promise<void> {
@@ -1678,9 +1787,13 @@ function wireKeyboard(): void {
 
     // Ctrl+B opens branches, stashes and tags. B for branch, and it is the only unclaimed
     // letter that names the thing — Monaco takes Ctrl+K and Ctrl+L, and Ctrl+T is symbols.
-    if (ctrl && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'b') {
+    //
+    // Shift lands on the worktree section of the same panel. A separate key would have been
+    // the alternative and there is not one to spare, whereas the shifted form of the panel's
+    // own key is where anybody would look for its other half.
+    if (ctrl && !event.altKey && event.key.toLowerCase() === 'b') {
       event.preventDefault()
-      showRefs()
+      showRefs(event.shiftKey ? 'worktrees' : 'branches')
       return
     }
 

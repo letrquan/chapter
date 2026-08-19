@@ -402,8 +402,11 @@ body.resizing {
   white-space: nowrap;
 }
 
-.repo-remove {
-  margin-left: auto;
+/* Both live at the right-hand end of the repo header and only appear on hover: they are
+   per-repository actions, and a rail whose every row carried two visible buttons would read
+   as a toolbar rather than as the list of worktrees it is. Only the first takes the
+   auto-margin, so the pair stays together. */
+.repo-action {
   display: grid;
   place-items: center;
   width: 18px;
@@ -414,11 +417,22 @@ body.resizing {
   transition: opacity var(--fast), color var(--fast), background var(--fast);
 }
 
-.repo-head:hover .repo-remove {
+.repo-action[data-add-worktree] {
+  margin-left: auto;
+}
+
+/* The two icons are drawn at different sizes in icons.ts. Sat side by side at 18px they
+   have to agree, or the pair reads as one button and one mistake. */
+.repo-action svg {
+  width: 12px;
+  height: 12px;
+}
+
+.repo-head:hover .repo-action {
   opacity: 1;
 }
 
-.repo-remove:hover {
+.repo-action:hover {
   color: var(--text);
   background: var(--bg-hover);
 }
@@ -1694,6 +1708,20 @@ kbd {
   color: var(--rename);
 }
 
+/* A worktree whose directory is gone. Coloured as a fault rather than as information —
+   unlike "checked out elsewhere", there is nothing behind this row to go to. */
+.refs-badge.missing {
+  background: color-mix(in srgb, var(--del) 16%, transparent);
+  color: var(--del);
+}
+
+/* Somebody locked this deliberately, possibly on another machine. Marked, not warned
+   about: it is a state the user chose, and prune and move are the only things it stops. */
+.refs-badge.locked {
+  background: color-mix(in srgb, var(--mod) 16%, transparent);
+  color: var(--mod);
+}
+
 .refs-badge.remote {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--border-strong);
@@ -2539,7 +2567,10 @@ kbd {
   line-height: 1.5;
 }
 
-.confirm-recovery.undoable {
+.confirm-recovery.undoable,
+/* Quiet on purpose. This is the case where nothing is at risk, and dressing it up like the
+   permanent one would teach people to read past the treatment that matters. */
+.confirm-recovery.harmless {
   color: var(--text-faint);
 }
 

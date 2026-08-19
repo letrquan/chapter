@@ -1,10 +1,10 @@
 import { call } from './bridge'
 import { confirm } from './confirm'
 import { icons } from './icons'
-import type { Branch, MutationPayload, RefsPayload, Stash, Tag } from './protocol'
+import type { Branch, MutationPayload, RefsPayload, Stash, Tag, Worktree } from './protocol'
 
 /**
- * Branches, stashes and tags — one overlay, three sections.
+ * Branches, worktrees, stashes and tags — one overlay, four sections.
  *
  * Built alongside `palette.ts` rather than inside it. The palette is shaped around a result
  * that is a place in a file (`path`, `line`, `column`) and does one thing to it; this is a
@@ -12,18 +12,37 @@ import type { Branch, MutationPayload, RefsPayload, Stash, Tag } from './protoco
  * two share an idiom — backdrop, capture-phase keys, arrows and Enter — and nothing else,
  * which is the same relationship `confirm.ts` has to both.
  *
- * Everything is read through one `getRefs` call. The three lists are shown together and
+ * Everything is read through one `getRefs` call. The four lists are shown together and
  * every mutation refreshes all of them, so fetching them separately would only give the
  * panel more ways to contradict itself.
+ *
+ * Worktrees sit here rather than in the rail, which is the other place they could have gone.
+ * The rail is the list of worktrees, but it is a hundred and sixty pixels wide and every row
+ * is a single button — there is no room for the four actions each worktree needs, and no
+ * honest way to ask "where should this one go?" in it. This overlay already has the row
+ * grid, the filter, the inline prompt, the confirmation and the keyboard, all of which
+ * worktree management needs and none of which the rail has.
  */
 
-type Section = 'branches' | 'stashes' | 'tags'
+type Section = 'branches' | 'worktrees' | 'stashes' | 'tags'
 
 /** What the caller has to do after a mutation: refresh the rest of the window. */
 type MutatedHandler = () => void | Promise<void>
 
 /** Lets a row hand the user to the worktree that already has a branch open. */
 type WorktreeHandler = (worktreePath: string) => void | Promise<void>
+
+/**
+ * Says a worktree the app was holding open no longer exists — removed, pruned, or moved
+ * elsewhere. Editor models, tabs and the active selection all key off the path, so the
+ * window has to be told rather than left to discover it by failing to read one.
+ *
+ * Where it went is deliberately not a parameter. A move is given a destination the user
+ * typed, which git resolves — against the main worktree, and into the platform's own
+ * separators — so the string this panel holds is not reliably the path that now exists. The
+ * window re-reads the list and can see for itself.
+ */
+type WorktreeGoneHandler = (worktreePath: string) => void | Promise<void>
 
 const ESCAPES: Record<string, string> = {
   '&': '&amp;',
@@ -51,6 +70,7 @@ let busy = false
 
 let onMutated: MutatedHandler = () => {}
 let onGoToWorktree: WorktreeHandler = () => {}
+let onWorktreeGone: WorktreeGoneHandler = () => {}
 let onToast: (message: string, detail?: string, kind?: 'info' | 'error') => void = () => {}
 
 /**
@@ -71,6 +91,9 @@ interface Row {
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: 'branches', label: 'Branches' },
+  // Second rather than last: this is the app's home turf, and it is the section most likely
+  // to be the reason the panel was opened at all.
+  { id: 'worktrees', label: 'Worktrees' },
   { id: 'stashes', label: 'Stashes' },
   { id: 'tags', label: 'Tags' },
 ]
@@ -81,7 +104,7 @@ function build(): void {
   overlay.innerHTML = `
     <div class="refs" role="dialog" aria-modal="true" aria-labelledby="refs-title">
       <div class="refs-head">
-        <span class="refs-title" id="refs-title">Refs</span>
+        <span class="refs-title" id="refs-title">Refs and worktrees</span>
         <span class="refs-subtitle"></span>
       </div>
       <div class="segmented refs-sections">
@@ -165,6 +188,7 @@ export async function openRefs(
   handlers: {
     onMutated: MutatedHandler
     onGoToWorktree: WorktreeHandler
+    onWorktreeGone: WorktreeGoneHandler
     toast: (message: string, detail?: string, kind?: 'info' | 'error') => void
   },
   startSection: Section = 'branches',
@@ -174,6 +198,7 @@ export async function openRefs(
   worktreePath = worktree
   onMutated = handlers.onMutated
   onGoToWorktree = handlers.onGoToWorktree
+  onWorktreeGone = handlers.onWorktreeGone
   onToast = handlers.toast
 
   section = startSection
@@ -219,8 +244,7 @@ function syncSectionButtons(): void {
   for (const button of overlay!.querySelectorAll<HTMLElement>('[data-section]'))
     button.classList.toggle('on', button.dataset.section === section)
 
-  filter.placeholder =
-    section === 'branches' ? 'Filter branches…' : section === 'stashes' ? 'Filter stashes…' : 'Filter tags…'
+  filter.placeholder = `Filter ${section}…`
 }
 
 /* ==========================================================================
@@ -245,9 +269,11 @@ function render(): void {
   rows =
     section === 'branches'
       ? branchRows(query)
-      : section === 'stashes'
-        ? stashRows(query)
-        : tagRows(query)
+      : section === 'worktrees'
+        ? worktreeRows(query)
+        : section === 'stashes'
+          ? stashRows(query)
+          : tagRows(query)
 
   // Both the list and the footer are replaced wholesale below, which detaches whatever
   // inside them had focus — a row's action button, most often. Focus then falls to
@@ -292,21 +318,51 @@ function emptyMessage(query: string): string {
       return 'The stash is empty'
     case 'tags':
       return 'No tags yet'
+    case 'worktrees':
+      // Not a state that can occur — a repository always has its main worktree — but the
+      // list is rendered from a payload, and an empty one should read as a sentence rather
+      // than as blank space.
+      return 'No worktrees in this repository'
     default:
       return 'No branches in this repository'
   }
 }
 
 function renderFooter(): void {
-  footer.innerHTML =
-    section === 'branches'
-      ? `<button class="btn small" data-foot="new-branch">${icons.plus}<span>New branch</span></button>`
-      : section === 'stashes'
-        ? `<button class="btn small" data-foot="stash">${icons.plus}<span>Stash changes</span></button>
-           <button class="btn small" data-foot="stash-untracked">
-             <span>Stash, including untracked</span>
-           </button>`
-        : `<button class="btn small" data-foot="new-tag">${icons.plus}<span>New tag</span></button>`
+  switch (section) {
+    case 'branches':
+      footer.innerHTML =
+        `<button class="btn small" data-foot="new-branch">${icons.plus}<span>New branch</span></button>`
+      return
+
+    case 'worktrees': {
+      // Prune is offered only when git has something to forget. A permanently visible button
+      // that usually says "nothing to do" trains people to ignore it, and the count is the
+      // whole of what makes it worth pressing.
+      const missing = refs?.worktrees.filter((w) => w.isPrunable).length ?? 0
+
+      footer.innerHTML =
+        `<button class="btn small" data-foot="new-worktree">${icons.plus}<span>New worktree</span></button>` +
+        (missing > 0
+          ? `<button class="btn small" data-foot="prune">
+               <span>Prune ${missing} missing</span>
+             </button>`
+          : '')
+      return
+    }
+
+    case 'stashes':
+      footer.innerHTML =
+        `<button class="btn small" data-foot="stash">${icons.plus}<span>Stash changes</span></button>
+         <button class="btn small" data-foot="stash-untracked">
+           <span>Stash, including untracked</span>
+         </button>`
+      return
+
+    default:
+      footer.innerHTML =
+        `<button class="btn small" data-foot="new-tag">${icons.plus}<span>New tag</span></button>`
+  }
 }
 
 /**
@@ -392,6 +448,107 @@ function branchHtml(branch: Branch, id: number): string {
     <span class="refs-sha">${esc(branch.shortSha)}</span>
     <span class="refs-actions">${actions}</span>`
 }
+
+/**
+ * Shortens a path from the left, which is the half that repeats down the list — every
+ * worktree in a repository shares most of its prefix, and the tail is what tells them apart.
+ * The full path is on the row's title either way.
+ */
+function shortPath(path: string, max = 42): string {
+  if (path.length <= max) return path
+
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  const separator = path.includes('\\') ? '\\' : '/'
+
+  let tail = parts.pop() ?? path
+  while (parts.length > 0) {
+    const next = `${parts[parts.length - 1]}${separator}${tail}`
+    if (next.length + 1 > max) break
+    tail = next
+    parts.pop()
+  }
+
+  return `…${separator}${tail}`
+}
+
+function worktreeRows(query: string): Row[] {
+  if (!refs) return []
+
+  // Matched on path as well as branch: two agents on branches called `fix-1` and `fix-2`
+  // are told apart by their name, but a worktree the user knows by its directory is not.
+  return refs.worktrees
+    .filter((w) => `${w.displayName} ${w.branch ?? ''} ${w.path}`.toLowerCase().includes(query))
+    .map((worktree) => ({
+      html: worktreeHtml(worktree, refs!.worktrees.indexOf(worktree)),
+      primary: () => useWorktree(worktree),
+    }))
+}
+
+function worktreeHtml(worktree: Worktree, id: number): string {
+  const isCurrent = samePath(worktree.path, worktreePath ?? '')
+
+  // Missing beats locked in the icon, because it is the one that says the row cannot be
+  // used. Both are still spelled out in the badges.
+  const icon = worktree.isPrunable || !worktree.isUsable ? icons.warning : icons.worktree
+
+  const badge = isCurrent
+    ? '<span class="refs-badge current">current</span>'
+    : worktree.isMain
+      ? '<span class="refs-badge">main</span>'
+      : '<span class="refs-badge-none"></span>'
+
+  const state = worktree.isPrunable
+    ? `<span class="refs-badge missing" title="${esc(worktree.prunableReason ?? 'the directory is gone')}">missing</span>`
+    : worktree.isLocked
+      ? `<span class="refs-badge locked" title="${esc(worktree.lockReason ?? 'locked')}">locked</span>`
+      : !worktree.isUsable
+        ? '<span class="refs-badge missing">unavailable</span>'
+        : '<span class="refs-badge-none"></span>'
+
+  // The main worktree is the repository; git refuses to remove, move, lock or unlock it, so
+  // the row offers none of those rather than four buttons that each fail the same way.
+  const actions = worktree.isMain
+    ? isCurrent
+      ? ''
+      : `<button class="icon-btn" data-row="${id}" data-action="go-worktree"
+                 title="Go to this worktree">${icons.external}</button>`
+    : `${
+        isCurrent
+          ? ''
+          : `<button class="icon-btn" data-row="${id}" data-action="go-worktree"
+                     title="Go to this worktree">${icons.external}</button>`
+      }
+       ${
+         worktree.isLocked
+           ? `<button class="icon-btn" data-row="${id}" data-action="unlock"
+                      title="Unlock">${icons.unlock}</button>`
+           : `<button class="icon-btn" data-row="${id}" data-action="lock"
+                      title="Lock, so prune and move leave it alone">${icons.lock}</button>`
+       }
+       <button class="icon-btn" data-row="${id}" data-action="move" title="Move">${icons.move}</button>
+       <button class="icon-btn danger" data-row="${id}" data-action="remove-worktree"
+               title="Remove worktree">${icons.discard}</button>`
+
+  return `
+    <span class="refs-icon">${icon}</span>
+    <span class="refs-name">${esc(worktree.displayName)}</span>
+    ${badge}
+    ${state}
+    <span class="refs-meta" title="${esc(worktree.path)}">${esc(shortPath(worktree.path))}</span>
+    <span class="refs-sha">${esc(worktree.shortHead)}</span>
+    <span class="refs-actions">${actions}</span>`
+}
+
+/**
+ * Compares two worktree paths.
+ *
+ * Case-insensitively and without a trailing separator, because the same worktree reaches the
+ * front-end from three places — git's list, the rail's selection and the settings file — and
+ * they do not agree on either. Getting this wrong shows a second "current" row, or offers to
+ * remove the worktree the user is standing in without saying so.
+ */
+const samePath = (a: string, b: string): boolean =>
+  a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase()
 
 function stashRows(query: string): Row[] {
   if (!refs) return []
@@ -530,6 +687,16 @@ async function run(
    * to stash them reads as two separate events, and the alarming one arrives first.
    */
   expected: MutationPayload['failure'][] = [],
+  /**
+   * A worktree this action destroys or moves, when it succeeds.
+   *
+   * Handled here rather than at the call site because the order matters and there is only
+   * one right one: the window has to be told the path is gone *before* anything refreshes
+   * against it. And when the vanished worktree is the one this panel was opened on, there is
+   * nothing left to re-read — the panel closes instead, because `getRefs` against a deleted
+   * directory can only produce an error message about the thing the user just asked for.
+   */
+  gone?: { path: string },
 ): Promise<MutationPayload | null> {
   if (busy) return null
   busy = true
@@ -541,6 +708,17 @@ async function run(
     if (result.ok) onToast(result.message)
     else if (!expected.includes(result.failure))
       onToast(result.message, result.commandLine || undefined, 'error')
+
+    if (result.ok && gone) {
+      const wasThisPanel = samePath(gone.path, worktreePath ?? '')
+
+      if (wasThisPanel) close()
+      await onWorktreeGone(gone.path)
+
+      // The handler above re-reads whatever the window moved to, which is everything
+      // `onMutated` would have done and more.
+      if (wasThisPanel) return result
+    }
 
     await refresh()
     await onMutated()
@@ -685,7 +863,157 @@ async function runRowAction(id: number, action: string): Promise<void> {
       if (tag) await deleteTag(tag)
       return
     }
+
+    case 'go-worktree': {
+      const worktree = refs.worktrees[id]
+      if (worktree) await useWorktree(worktree)
+      return
+    }
+
+    case 'lock': {
+      const worktree = refs.worktrees[id]
+      if (!worktree) return
+
+      const reason = await prompt(`Why is ${worktree.displayName} locked? (optional)`, '')
+      if (reason == null) return
+
+      await run(() => call('lockWorktree', { worktreePath: worktreePath!, target: worktree.path, reason }))
+      return
+    }
+
+    case 'unlock': {
+      const worktree = refs.worktrees[id]
+      if (worktree)
+        await run(() => call('unlockWorktree', { worktreePath: worktreePath!, target: worktree.path }))
+      return
+    }
+
+    case 'move': {
+      const worktree = refs.worktrees[id]
+      if (worktree) await moveWorktree(worktree)
+      return
+    }
+
+    case 'remove-worktree': {
+      const worktree = refs.worktrees[id]
+      if (worktree) await removeWorktree(worktree)
+      return
+    }
   }
+}
+
+/** Enter on a worktree row: go there. Everything else about it is a button. */
+async function useWorktree(worktree: Worktree): Promise<void> {
+  if (samePath(worktree.path, worktreePath ?? '')) return
+
+  if (!worktree.isUsable) {
+    onToast(
+      `${worktree.displayName} has no working directory`,
+      worktree.prunableReason ?? 'The directory it named is gone.',
+      'error',
+    )
+    return
+  }
+
+  close()
+  await onGoToWorktree(worktree.path)
+}
+
+async function moveWorktree(worktree: Worktree): Promise<void> {
+  const destination = await prompt(`Move ${worktree.displayName} to`, worktree.path)
+  if (destination == null || samePath(destination, worktree.path)) return
+
+  // No confirmation: a move destroys nothing, and git refuses if the destination is taken.
+  // What it does break is every path the window is holding for this worktree, which is why
+  // the new location travels with the notification rather than the window being left to
+  // discover it.
+  await run(
+    () => call('moveWorktree', { worktreePath: worktreePath!, target: worktree.path, destination }),
+    [],
+    { path: worktree.path },
+  )
+}
+
+/**
+ * Removes a worktree, asking twice when the second question is a different one.
+ *
+ * The first removal is attempted without `--force`, so git decides whether tracked work is
+ * at risk — the same shape as deleting a branch. Its refusal is what turns a tidy-up into a
+ * question about somebody's work in progress. Both questions are permanent; what differs is
+ * what goes, and that is what the two bodies say.
+ */
+async function removeWorktree(worktree: Worktree): Promise<void> {
+  // Locked is asked first because it is a decision, not an obstacle. Somebody locked this
+  // deliberately, possibly on another machine, and the reason is the whole of what they left
+  // behind to say why.
+  if (worktree.isLocked) {
+    const unlock = await confirm({
+      title: `${worktree.displayName} is locked`,
+      body: worktree.lockReason
+        ? `It was locked with the reason: "${worktree.lockReason}". Unlock it before removing?`
+        : 'It was locked, with no reason recorded. Unlock it before removing?',
+      confirmLabel: 'Unlock',
+      recovery: 'undoable',
+    })
+
+    if (!unlock) return
+
+    const unlocked = await run(() =>
+      call('unlockWorktree', { worktreePath: worktreePath!, target: worktree.path }),
+    )
+
+    if (!unlocked?.ok) return
+  }
+
+  const ok = await confirm({
+    title: `Remove ${worktree.displayName}?`,
+    body:
+      'The whole directory is deleted, including files git ignores — a .env, a node_modules, ' +
+      'anything built. The branch and its commits stay in the repository, so committed work ' +
+      'is not affected.',
+    confirmLabel: 'Remove',
+    detail: [worktree.path],
+    // Permanent, and this was wrong once. The reasoning for "undoable" was that git refuses
+    // the unforced removal if anything is uncommitted, so nothing outside git can be lost —
+    // and git's check is `status`, which does not report ignored files. A worktree whose only
+    // untracked content is a .env and a node_modules is "clean" to that check and is deleted
+    // without a murmur. Nothing in the app reverses it either: removal records no undo point,
+    // because there is nothing an inverse command could put back.
+    recovery: 'permanent',
+  })
+
+  if (!ok) return
+
+  const gone = { path: worktree.path }
+
+  const result = await run(
+    () => call('removeWorktree', { worktreePath: worktreePath!, target: worktree.path }),
+    ['wouldLoseChanges'],
+    gone,
+  )
+
+  if (!result || result.ok) return
+  if (result.failure !== 'wouldLoseChanges') return
+
+  const force = await confirm({
+    title: `${worktree.displayName} has uncommitted work in it`,
+    body:
+      'Removing it now deletes files that were never committed — an agent’s work in progress, ' +
+      'or anything not yet staged. Committing or stashing first is the way to keep it.',
+    confirmLabel: 'Remove anyway',
+    detail: [worktree.path],
+    // Uncommitted content is in no git object, so neither the reflog nor undo can reach it —
+    // the same fact that makes discard permanent, for the same reason.
+    recovery: 'permanent',
+  })
+
+  if (!force) return
+
+  await run(
+    () => call('removeWorktree', { worktreePath: worktreePath!, target: worktree.path, force: true }),
+    [],
+    gone,
+  )
 }
 
 /** Both fields together — see the protocol note on why the sha travels with the index. */
@@ -788,6 +1116,14 @@ async function runFooterAction(action: string): Promise<void> {
       return
     }
 
+    case 'new-worktree':
+      await newWorktree()
+      return
+
+    case 'prune':
+      await pruneWorktrees()
+      return
+
     case 'new-tag': {
       const name = await prompt('Name the new tag', '')
       if (!name) return
@@ -801,6 +1137,124 @@ async function runFooterAction(action: string): Promise<void> {
       return
     }
   }
+}
+
+/**
+ * Adds a worktree: a name, then a place to put it.
+ *
+ * Two questions rather than one, and neither is optional. The name decides the branch and
+ * the path decides where the checkout lands, and conflating them — deriving the path from
+ * the name and never showing it — is how a tool ends up creating directories somewhere the
+ * user did not expect and cannot find.
+ *
+ * Whether the branch is created or checked out is *not* a third question. The panel already
+ * holds the branch list, so it can tell which of the two this is, and asking the user to
+ * classify something the app already knows is a question with a right answer — which is not
+ * a question worth asking.
+ */
+async function newWorktree(): Promise<void> {
+  if (!refs) return
+
+  const name = await prompt('Name the branch for the new worktree', '')
+  if (!name) return
+
+  const existing = refs.branches.find((b) => !b.isRemote && b.name === name)
+
+  // A name that exists on exactly one remote and nowhere locally is git's own dwim case:
+  // `git worktree add <path> <name>` creates a local branch tracking it and says so. Passing
+  // `-b` instead produces a branch of the same name that tracks nothing, from the wrong
+  // commit — which looks identical in the list and is not the branch the user asked for.
+  const tracking = refs.branches.filter(
+    (b) => b.isRemote && b.name.slice(b.name.indexOf('/') + 1) === name,
+  )
+
+  const dwim = existing == null && tracking.length === 1
+
+  // `checkedOutIn`, not `isCheckedOutElsewhere`: the latter is false for the branch *this*
+  // worktree is on, so naming it fell through to git, whose refusal — "that branch is checked
+  // out in another worktree" — is untrue and sends the user looking for a worktree that does
+  // not exist. Git's rule is one worktree per branch, and this one counts.
+  if (existing?.checkedOutIn != null) {
+    onToast(
+      existing.isCurrent
+        ? `You are already on ${name} here`
+        : `${name} is already open in another worktree`,
+      'Git allows a branch in one worktree at a time. Pick another name, or work in the one that has it.',
+      'error',
+    )
+    return
+  }
+
+  // Asked of the backend rather than assembled here: which layout this repository uses is a
+  // fact about the repository, and joining paths is a fact about the platform. Neither is
+  // something the window can work out from what it has.
+  let suggestion = ''
+  try {
+    suggestion = await call('suggestWorktreePath', { worktreePath: worktreePath!, name })
+  } catch {
+    // A suggestion that could not be made is an empty box, not a failure — the user knows
+    // where they want it.
+  }
+
+  // The label says which of the three things is about to happen, because they differ in what
+  // the worktree will contain: an existing branch as it stands, a branch from a remote, or
+  // an empty new one at this HEAD.
+  const label = existing
+    ? `Where should the worktree for ${name} go?`
+    : dwim
+      ? `Where should ${name} go? It is created from ${tracking[0]!.name}.`
+      : `Where should ${name} go? A new branch is created.`
+
+  const path = await prompt(label, suggestion)
+  if (!path) return
+
+  await run(() =>
+    call('addWorktree', {
+      worktreePath: worktreePath!,
+      path,
+      branch: name,
+      createBranch: existing == null && !dwim,
+    }),
+  )
+}
+
+/**
+ * Prunes, showing first what pruning would forget.
+ *
+ * The dry run is the point. Every other action in this panel names the thing it acts on in
+ * the row it was clicked from; prune acts on entries that have no row, because the
+ * directories they refer to are gone. Without the preview the button says "do something to
+ * an unspecified number of things you cannot see".
+ */
+async function pruneWorktrees(): Promise<void> {
+  let entries: { name: string; reason: string }[]
+
+  try {
+    const preview = await call('previewPrune', { worktreePath: worktreePath! })
+    entries = preview.entries
+  } catch (error) {
+    onToast('Could not check what pruning would remove', message(error), 'error')
+    return
+  }
+
+  if (entries.length === 0) {
+    onToast('Nothing to prune', 'Every worktree git knows about is still where it should be.')
+    return
+  }
+
+  const ok = await confirm({
+    title: entries.length === 1 ? 'Forget 1 missing worktree?' : `Forget ${entries.length} missing worktrees?`,
+    body:
+      'Git stops tracking these. Their directories are already gone — pruning removes the ' +
+      'records left behind, and the branches they had checked out are untouched.',
+    confirmLabel: 'Prune',
+    detail: entries.map((entry) => (entry.reason ? `${entry.name} — ${entry.reason}` : entry.name)),
+    recovery: 'harmless',
+  })
+
+  if (!ok) return
+
+  await run(() => call('pruneWorktrees', { worktreePath: worktreePath! }))
 }
 
 /* ==========================================================================
