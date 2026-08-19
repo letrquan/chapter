@@ -32,7 +32,15 @@ export interface Worktree {
   isLocked: boolean
   lockReason: string | null
   displayName: string
+  shortHead: string
   isUsable: boolean
+}
+
+/** One entry `git worktree prune` says it would forget. */
+export interface PrunableEntry {
+  /** The id under `.git/worktrees/` — the directory's original name, which is all git has left. */
+  name: string
+  reason: string
 }
 
 export type ChangeKind =
@@ -351,6 +359,12 @@ export interface RefsPayload {
   branches: Branch[]
   stashes: Stash[]
   tags: Tag[]
+  /**
+   * The repository's worktrees. Read here as well as by the rail on purpose: they are two
+   * views refreshed at different moments, and sharing the rail's copy would leave the panel
+   * listing worktrees that were removed through it seconds earlier.
+   */
+  worktrees: Worktree[]
   /** The branch this worktree is on, or null when HEAD is detached. */
   current: string | null
   /** False during a merge or rebase, where starting something new is illegal. */
@@ -634,6 +648,38 @@ export interface Api {
     result: MutationPayload
   }
   deleteTag: { params: { worktreePath: string; name: string }; result: MutationPayload }
+
+  /**
+   * Worktree management. `worktreePath` says which repository — it is checked against the
+   * ones this window has open — and `target` says which worktree inside it, resolved against
+   * that repository's own list rather than trusted.
+   */
+  addWorktree: {
+    params: {
+      worktreePath: string
+      path: string
+      branch?: string
+      createBranch?: boolean
+      startPoint?: string
+    }
+    result: MutationPayload
+  }
+  /** `force` passes a single `--force`; send it only after git has refused and the user was told why. */
+  removeWorktree: {
+    params: { worktreePath: string; target: string; force?: boolean }
+    result: MutationPayload
+  }
+  moveWorktree: {
+    params: { worktreePath: string; target: string; destination: string }
+    result: MutationPayload
+  }
+  lockWorktree: { params: { worktreePath: string; target: string; reason?: string }; result: MutationPayload }
+  unlockWorktree: { params: { worktreePath: string; target: string }; result: MutationPayload }
+  /** What pruning would forget, asked of git before the button rather than inferred from the list. */
+  previewPrune: { params: { worktreePath: string }; result: { entries: PrunableEntry[] } }
+  pruneWorktrees: { params: { worktreePath: string }; result: MutationPayload }
+  /** Where a new worktree should go, following whatever layout the repository already uses. */
+  suggestWorktreePath: { params: { worktreePath: string; name: string }; result: string }
 
   getAiStatus: { params: void; result: AiAvailability }
   /** Stores the key, or forgets it when empty. The key is never returned. */
