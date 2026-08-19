@@ -315,6 +315,44 @@ public sealed class BridgeDispatcher
             (req, token) => Workspace.Tags.DeleteAsync(req.WorktreePath, req.Name, token),
             req => req.WorktreePath, ct).ConfigureAwait(false),
 
+        // --- worktrees --------------------------------------------------------
+
+        "addWorktree" => await MutateWorktreeAsync(
+            request.ParamsAs<AddWorktreeRequest>(),
+            (req, token) => Workspace.Worktrees.AddAsync(
+                req.WorktreePath, req.Path, req.Branch, req.CreateBranch, req.StartPoint, token),
+            req => req.WorktreePath, releases: null, ct).ConfigureAwait(false),
+
+        "removeWorktree" => await MutateWorktreeAsync(
+            request.ParamsAs<WorktreeTargetRequest>(),
+            (req, token) => Workspace.Worktrees.RemoveAsync(req.WorktreePath, req.Target, req.Force, token),
+            req => req.WorktreePath, releases: req => req.Target, ct).ConfigureAwait(false),
+
+        "moveWorktree" => await MutateWorktreeAsync(
+            request.ParamsAs<WorktreeTargetRequest>(),
+            (req, token) => Workspace.Worktrees.MoveAsync(req.WorktreePath, req.Target, req.Destination, token),
+            req => req.WorktreePath, releases: req => req.Target, ct).ConfigureAwait(false),
+
+        "lockWorktree" => await MutateWorktreeAsync(
+            request.ParamsAs<WorktreeTargetRequest>(),
+            (req, token) => Workspace.Worktrees.LockAsync(req.WorktreePath, req.Target, req.Reason, token),
+            req => req.WorktreePath, releases: null, ct).ConfigureAwait(false),
+
+        "unlockWorktree" => await MutateWorktreeAsync(
+            request.ParamsAs<WorktreeTargetRequest>(),
+            (req, token) => Workspace.Worktrees.UnlockAsync(req.WorktreePath, req.Target, token),
+            req => req.WorktreePath, releases: null, ct).ConfigureAwait(false),
+
+        "previewPrune" => await PreviewPruneAsync(request.ParamsAs<WorktreeRequest>(), ct).ConfigureAwait(false),
+
+        "pruneWorktrees" => await MutateWorktreeAsync(
+            request.ParamsAs<WorktreeRequest>(),
+            (req, token) => Workspace.Worktrees.PruneAsync(req.WorktreePath, token),
+            req => req.WorktreePath, releases: null, ct).ConfigureAwait(false),
+
+        "suggestWorktreePath" => await SuggestWorktreePathAsync(
+            request.ParamsAs<SuggestPathRequest>(), ct).ConfigureAwait(false),
+
         // --- generated commit messages ----------------------------------------
 
         "getAiStatus" => Generator.Describe(),
@@ -478,6 +516,125 @@ public sealed class BridgeDispatcher
     }
 
     /// <summary>
+    /// A mutation to the set of worktrees rather than to the contents of one.
+    ///
+    /// Two things separate these from every other mutation. The rail is a list of worktrees,
+    /// so all of them change it and all of them have to announce that — the same refresh a
+    /// branch switch needs, for the same reason.
+    ///
+    /// And two of them destroy or move the directory the app is holding open. A recursive
+    /// <see cref="WorktreeWatcher"/> and a symbol index both keep handles into a worktree,
+    /// and on Windows a directory that anything holds open cannot be deleted — so
+    /// <paramref name="releases"/> names the worktree to let go of, and it is let go of
+    /// <b>before</b> git runs rather than after. A removal that then fails leaves the app
+    /// having forgotten a worktree that still exists, which costs one re-listing: the
+    /// announcement below is what triggers it.
+    ///
+    /// Written out rather than wrapping <see cref="MutateAsync"/>, because the release above
+    /// is exactly what that method's membership check would trip over: removing the worktree
+    /// the panel was opened on means host and target are the same path, and forgetting it
+    /// first would make the app refuse its own request. The check happens here, before
+    /// anything is let go of.
+    /// </summary>
+    private async Task<object> MutateWorktreeAsync<TRequest>(
+        TRequest request,
+        Func<TRequest, CancellationToken, Task<GitMutation>> run,
+        Func<TRequest, string> worktreeOf,
+        Func<TRequest, string>? releases,
+        CancellationToken ct)
+    {
+        var host = worktreeOf(request);
+
+        if (!Workspace.IsKnownWorktree(host))
+            throw new InvalidOperationException("That worktree is not open in this window.");
+
+        // Resolved before the mutation, because afterwards it may be unresolvable: removing
+        // the worktree the panel was opened against leaves `host` naming a directory that no
+        // longer exists, and asking git which repository it belonged to would fail — leaving
+        // the rail still showing the worktree that was just deleted.
+        var repo = await ResolveRepoAsync(host, ct).ConfigureAwait(false);
+
+        var target = releases?.Invoke(request);
+        var released = !string.IsNullOrEmpty(target);
+        var releasedHost = false;
+
+        if (released)
+        {
+            _watcher.Unwatch(target!);
+            Index.Forget(target!);
+            Workspace.ForgetWorktree(target!);
+
+            releasedHost = string.Equals(target, host, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var succeeded = false;
+
+        try
+        {
+            var mutation = await run(request, ct).ConfigureAwait(false);
+            succeeded = mutation.Success;
+
+            return MutationPayload.From(mutation);
+        }
+        finally
+        {
+            // Put back what was let go of, unless git actually took the worktree away.
+            //
+            // Not merely tidiness: membership is what `getRefs` and every mutation are gated
+            // on, so a worktree released for a removal git then refuses is one the app will
+            // not talk about — and the refusal this matters for is the *expected* one, where
+            // the panel re-reads immediately and then offers to force. Waiting for the
+            // announcement below to bring it back is a race the user's next click is in.
+            // Re-listing is what admits a worktree, so this is the same call that resolved
+            // the repository above.
+            if (released && !succeeded) await ResolveRepoAsync(repo ?? host, ct).ConfigureAwait(false);
+
+            // Skipped when the host is the thing that was just removed: "these files changed"
+            // about a directory that no longer exists sends the front-end to re-read it.
+            if (!releasedHost || !succeeded) AnnounceSelfWrite(host);
+
+            if (repo is not null) RaiseEvent("worktreesChanged", new { repoPath = repo });
+            else await AnnounceBranchChangeAsync(host, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<string?> ResolveRepoAsync(string worktreePath, CancellationToken ct)
+    {
+        try
+        {
+            var worktrees = await Workspace.GetWorktreesAsync(worktreePath, ct).ConfigureAwait(false);
+            return worktrees.FirstOrDefault(w => w.IsMain)?.Path;
+        }
+        catch (GitException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// What pruning would forget. A dry run: it is offered before the button, not instead
+    /// of it, so the answer has to come from git rather than from the prunable flags in the
+    /// worktree list — see <see cref="WorktreeService.PreviewPruneAsync"/> for where the two
+    /// disagree.
+    /// </summary>
+    private async Task<object> PreviewPruneAsync(WorktreeRequest req, CancellationToken ct)
+    {
+        if (!Workspace.IsKnownWorktree(req.WorktreePath))
+            throw new InvalidOperationException("That worktree is not open in this window.");
+
+        var entries = await Workspace.Worktrees.PreviewPruneAsync(req.WorktreePath, ct).ConfigureAwait(false);
+        return new PrunePreviewPayload { Entries = entries };
+    }
+
+    private async Task<object> SuggestWorktreePathAsync(SuggestPathRequest req, CancellationToken ct)
+    {
+        if (!Workspace.IsKnownWorktree(req.WorktreePath))
+            throw new InvalidOperationException("That worktree is not open in this window.");
+
+        return await Workspace.Worktrees.SuggestPathAsync(req.WorktreePath, req.Name, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Tells the front-end to re-read the worktree list for the repository a worktree
     /// belongs to.
     ///
@@ -521,7 +678,12 @@ public sealed class BridgeDispatcher
         var tagTask = Workspace.Tags.ListAsync(req.WorktreePath, ct);
         var stateTask = Workspace.GetRepositoryStateAsync(req.WorktreePath, ct);
 
-        await Task.WhenAll(branchTask, stashTask, tagTask, stateTask).ConfigureAwait(false);
+        // Through the workspace rather than the lister, because that is also what admits a
+        // worktree to the set the app may write to: a worktree added through this panel is
+        // then usable immediately, rather than only after the rail happens to re-read.
+        var worktreeTask = Workspace.GetWorktreesAsync(req.WorktreePath, ct);
+
+        await Task.WhenAll(branchTask, stashTask, tagTask, stateTask, worktreeTask).ConfigureAwait(false);
 
         var state = await stateTask.ConfigureAwait(false);
         var branches = await branchTask.ConfigureAwait(false);
@@ -536,6 +698,7 @@ public sealed class BridgeDispatcher
             Branches = branches,
             Stashes = await stashTask.ConfigureAwait(false),
             Tags = await tagTask.ConfigureAwait(false),
+            Worktrees = await worktreeTask.ConfigureAwait(false),
             Current = branches.FirstOrDefault(b => b.IsCurrent)?.Name,
             CanSwitch = guard.Allowed,
             BlockedReason = guard.Reason,

@@ -381,6 +381,77 @@ public sealed record DeleteTagRequest
     public string Name { get; init; } = "";
 }
 
+// ---------------------------------------------------------------------------
+// Worktrees
+//
+// Every request here carries two paths and they mean different things.
+// <c>WorktreePath</c> says which repository is being acted on — it is the worktree the panel
+// was opened against, and it is checked against the set the app has actually opened, the
+// same way every other mutation checks it. <c>Target</c> is the worktree the action is aimed
+// at, which is resolved against that repository's own list rather than trusted.
+// ---------------------------------------------------------------------------
+
+public sealed record AddWorktreeRequest
+{
+    public string WorktreePath { get; init; } = "";
+
+    /// <summary>Where the new worktree goes. Relative paths resolve against the main worktree.</summary>
+    public string Path { get; init; } = "";
+
+    /// <summary>
+    /// The branch to check out, or the name to create when <see cref="CreateBranch"/> is set.
+    /// Empty leaves it to git, which names a new branch after the directory.
+    /// </summary>
+    public string Branch { get; init; } = "";
+
+    public bool CreateBranch { get; init; }
+
+    /// <summary>Where a newly created branch begins. Empty means the current HEAD.</summary>
+    public string StartPoint { get; init; } = "";
+}
+
+/// <summary>Acting on one worktree of the repository.</summary>
+public sealed record WorktreeTargetRequest
+{
+    public string WorktreePath { get; init; } = "";
+    public string Target { get; init; } = "";
+
+    /// <summary>
+    /// Passes a single <c>--force</c> to a removal, which covers a worktree containing
+    /// modified or untracked files. Never sent before git has refused once and the user has
+    /// been told what would be thrown away.
+    /// </summary>
+    public bool Force { get; init; }
+
+    /// <summary>Where a move puts it. Ignored by everything else.</summary>
+    public string Destination { get; init; } = "";
+
+    /// <summary>Why a worktree is locked, recorded with the lock for whoever finds it later.</summary>
+    public string Reason { get; init; } = "";
+}
+
+/// <summary>Where a new worktree should go, given what the repository already does.</summary>
+public sealed record SuggestPathRequest
+{
+    public string WorktreePath { get; init; } = "";
+
+    /// <summary>The branch or worktree name the directory should be called after.</summary>
+    public string Name { get; init; } = "";
+}
+
+/// <summary>
+/// What <c>prune</c> would forget, before it is run.
+///
+/// The roadmap's dry-run item, in its first use. Prune is the one worktree operation whose
+/// effect is invisible beforehand — it acts on administrative files for directories that are
+/// already gone — so a list of what it will touch is the only way to answer "what is this
+/// button about to do".
+/// </summary>
+public sealed record PrunePreviewPayload
+{
+    public required IReadOnlyList<Git.PrunableEntry> Entries { get; init; }
+}
+
 /// <summary>
 /// Everything the ref panel renders, in one call.
 ///
@@ -395,6 +466,17 @@ public sealed record RefsPayload
     public required IReadOnlyList<Git.Branch> Branches { get; init; }
     public required IReadOnlyList<Git.Stash> Stashes { get; init; }
     public required IReadOnlyList<Git.Tag> Tags { get; init; }
+
+    /// <summary>
+    /// The repository's worktrees, so the panel's fourth section reads from the same call as
+    /// the other three.
+    ///
+    /// The rail asks <c>getWorktrees</c> for the same list, which looks like duplication and
+    /// is not: they are two views refreshed at different moments, and the alternative — the
+    /// panel reading the rail's copy — would leave it showing worktrees that were removed
+    /// through it seconds earlier.
+    /// </summary>
+    public required IReadOnlyList<Git.Worktree> Worktrees { get; init; }
 
     /// <summary>The branch this worktree is on, or null when HEAD is detached.</summary>
     public string? Current { get; init; }

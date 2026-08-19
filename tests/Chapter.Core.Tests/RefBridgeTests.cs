@@ -299,4 +299,155 @@ public class RefBridgeTests : IDisposable
         var afterDelete = await CallAsync(dispatcher, "getRefs", new { worktreePath = root });
         Assert.Empty(afterDelete.GetProperty("tags").EnumerateArray().ToArray());
     }
+
+    // -----------------------------------------------------------------------
+    // Worktrees
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task GetRefs_carries_every_worktree_field_the_panel_renders()
+    {
+        var (dispatcher, root, linked) = await NewAsync();
+
+        await CallAsync(
+            dispatcher, "lockWorktree",
+            new { worktreePath = root, target = linked, reason = "an agent is running" });
+
+        var refs = await CallAsync(dispatcher, "getRefs", new { worktreePath = root });
+        var worktrees = refs.GetProperty("worktrees").EnumerateArray().ToArray();
+
+        Assert.Equal(2, worktrees.Length);
+
+        var main = worktrees.Single(w => w.GetProperty("isMain").GetBoolean());
+        Assert.Equal(root, main.GetProperty("path").GetString(), ignoreCase: true);
+        Assert.Equal("main", main.GetProperty("displayName").GetString());
+        Assert.Equal(7, main.GetProperty("shortHead").GetString()!.Length);
+        Assert.True(main.GetProperty("isUsable").GetBoolean());
+
+        var other = worktrees.Single(w => !w.GetProperty("isMain").GetBoolean());
+        Assert.Equal("feature", other.GetProperty("branch").GetString());
+        Assert.True(other.GetProperty("isLocked").GetBoolean());
+        Assert.Equal("an agent is running", other.GetProperty("lockReason").GetString());
+        Assert.False(other.GetProperty("isPrunable").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Adding_and_removing_a_worktree_round_trips_through_the_bridge()
+    {
+        var (dispatcher, root, _) = await NewAsync();
+
+        var path = root + "-added";
+        _created.Add(path);
+
+        var added = await CallAsync(
+            dispatcher, "addWorktree",
+            new { worktreePath = root, path, branch = "added", createBranch = true });
+
+        Assert.True(added.GetProperty("ok").GetBoolean(), added.GetProperty("message").GetString());
+        Assert.True(Directory.Exists(path));
+
+        var removed = await CallAsync(
+            dispatcher, "removeWorktree", new { worktreePath = root, target = path });
+
+        Assert.True(removed.GetProperty("ok").GetBoolean(), removed.GetProperty("message").GetString());
+        Assert.False(Directory.Exists(path));
+    }
+
+    [Fact]
+    public async Task Removing_the_worktree_the_request_names_as_its_own_is_not_refused_as_unknown()
+    {
+        // The membership check has to happen before the app lets go of the worktree's
+        // watcher and index, or removing the one the panel was opened on is refused with
+        // "that worktree is not open in this window" — the app turning down its own request.
+        var (dispatcher, root, linked) = await NewAsync();
+
+        var result = await CallAsync(
+            dispatcher, "removeWorktree", new { worktreePath = linked, target = linked });
+
+        Assert.True(result.GetProperty("ok").GetBoolean(), result.GetProperty("message").GetString());
+        Assert.False(Directory.Exists(linked));
+    }
+
+    [Fact]
+    public async Task A_worktree_with_uncommitted_work_comes_back_with_the_failure_the_ui_branches_on()
+    {
+        var (dispatcher, root, linked) = await NewAsync();
+
+        await File.WriteAllTextAsync(Path.Combine(linked, "wip.txt"), "an agent was here\n");
+
+        var refused = await CallAsync(
+            dispatcher, "removeWorktree", new { worktreePath = root, target = linked });
+
+        Assert.False(refused.GetProperty("ok").GetBoolean());
+
+        // The camelCase spelling the front-end tests for before asking the permanent-loss
+        // question. Anything else and the dialog never appears.
+        Assert.Equal("wouldLoseChanges", refused.GetProperty("failure").GetString());
+
+        var forced = await CallAsync(
+            dispatcher, "removeWorktree", new { worktreePath = root, target = linked, force = true });
+
+        Assert.True(forced.GetProperty("ok").GetBoolean(), forced.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task A_refused_removal_leaves_the_worktree_open_in_this_window()
+    {
+        // The whole two-step flow, from the worktree being removed. The app lets go of the
+        // target's watcher and index before git runs, and a refusal has to put that back: the
+        // panel re-reads the moment the removal is turned down, and `getRefs` is gated on the
+        // same membership. Without the restore it reports "that worktree is not open in this
+        // window" — the app disowning the worktree the user is standing in — and the forced
+        // removal it is about to offer fails the same way.
+        var (dispatcher, _, linked) = await NewAsync();
+
+        await File.WriteAllTextAsync(Path.Combine(linked, "wip.txt"), "an agent was here\n");
+
+        var refused = await CallAsync(
+            dispatcher, "removeWorktree", new { worktreePath = linked, target = linked });
+
+        Assert.False(refused.GetProperty("ok").GetBoolean());
+
+        // Each of these throws if the worktree was left disowned. CallAsync asserts on `ok`.
+        await CallAsync(dispatcher, "getRefs", new { worktreePath = linked });
+
+        var forced = await CallAsync(
+            dispatcher, "removeWorktree", new { worktreePath = linked, target = linked, force = true });
+
+        Assert.True(forced.GetProperty("ok").GetBoolean(), forced.GetProperty("message").GetString());
+        Assert.False(Directory.Exists(linked));
+    }
+
+    [Fact]
+    public async Task The_prune_preview_crosses_the_wire_as_the_shape_the_dialog_lists()
+    {
+        var (dispatcher, root, linked) = await NewAsync();
+
+        Directory.Delete(linked, recursive: true);
+
+        var preview = await CallAsync(dispatcher, "previewPrune", new { worktreePath = root });
+        var entry = Assert.Single(preview.GetProperty("entries").EnumerateArray().ToArray());
+
+        Assert.Equal(Path.GetFileName(linked), entry.GetProperty("name").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(entry.GetProperty("reason").GetString()));
+
+        var pruned = await CallAsync(dispatcher, "pruneWorktrees", new { worktreePath = root });
+        Assert.True(pruned.GetProperty("ok").GetBoolean(), pruned.GetProperty("message").GetString());
+
+        var refs = await CallAsync(dispatcher, "getRefs", new { worktreePath = root });
+        Assert.Single(refs.GetProperty("worktrees").EnumerateArray().ToArray());
+    }
+
+    [Fact]
+    public async Task A_suggested_path_comes_back_as_a_plain_string()
+    {
+        var (dispatcher, root, _) = await NewAsync();
+
+        var suggestion = await CallAsync(
+            dispatcher, "suggestWorktreePath", new { worktreePath = root, name = "review" });
+
+        // A string rather than an object: the front-end drops it straight into the prompt.
+        Assert.Equal(JsonValueKind.String, suggestion.ValueKind);
+        Assert.EndsWith("review", suggestion.GetString());
+    }
 }
