@@ -72,6 +72,23 @@ export const icons = {
     '<path d="M3.3 4.2 1.9 9.1a1.5 1.5 0 0 0-.15.65v2.5a1.5 1.5 0 0 0 1.5 1.5h9.5a1.5 1.5 0 0 0 1.5-1.5v-2.5' +
     'a1.5 1.5 0 0 0-.15-.65L12.7 4.2a1 1 0 0 0-.95-.7H4.25a1 1 0 0 0-.95.7Z"/>', 13),
 
+  /**
+   * Worktree: a folder with a branch node on it. Deliberately not the plain branch icon the
+   * rail rows use — inside the refs panel a branch row and a worktree row sit two sections
+   * apart, and they must not read as the same kind of thing.
+   */
+  worktree: svg('<path d="M1.9 4.2a.7.7 0 0 1 .7-.7h2.7a1 1 0 0 1 .78.37l.6.76a1 1 0 0 0 .78.37h5.65' +
+    'a.7.7 0 0 1 .7.7v6.6a.7.7 0 0 1-.7.7H2.6a.7.7 0 0 1-.7-.7Z"/><circle cx="8" cy="9.5" r="1.6"/>', 13),
+
+  /** Lock: closed shackle, for a worktree that prune and move must leave alone. */
+  lock: svg('<rect x="3.5" y="7" width="9" height="6.5" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>', 13),
+
+  /** Unlock: the same body with the shackle open, so the pair is legible at a glance. */
+  unlock: svg('<rect x="3.5" y="7" width="9" height="6.5" rx="1.2"/><path d="M5.5 7V5a2.5 2.5 0 0 1 4.9-.6"/>', 13),
+
+  /** Move: an arrow leaving one place for another. */
+  move: svg('<path d="M2.5 8h9"/><path d="M8.5 5 11.5 8l-3 3"/><path d="M13.5 3v10"/>', 13),
+
   /** Tag: a label with its eyelet, which is what a tag is. */
   tag: svg('<path d="M7.2 1.9H2.6a.7.7 0 0 0-.7.7v4.6a1 1 0 0 0 .3.7l6.2 6.2a1 1 0 0 0 1.4 0l4.3-4.3' +
     'a1 1 0 0 0 0-1.4L7.9 2.2a1 1 0 0 0-.7-.3Z"/><circle cx="5" cy="5" r="1"/>', 13),
