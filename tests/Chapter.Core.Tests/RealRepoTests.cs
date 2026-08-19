@@ -22,7 +22,7 @@ public class RealRepoTests
     {
         Skip.IfNot(Directory.Exists(BookRepo), $"{BookRepo} not present");
 
-        var worktrees = await new WorktreeService(Git).ListAsync(BookRepo);
+        var worktrees = await new WorkspaceService(Git).Worktrees.ListAsync(BookRepo);
 
         // Siblings of the repo directory rather than nested inside it.
         Assert.Equal(4, worktrees.Count);
@@ -36,7 +36,7 @@ public class RealRepoTests
     {
         Skip.IfNot(Directory.Exists(HeatRepo), $"{HeatRepo} not present");
 
-        var worktrees = await new WorktreeService(Git).ListAsync(HeatRepo);
+        var worktrees = await new WorkspaceService(Git).Worktrees.ListAsync(HeatRepo);
 
         Assert.Contains(worktrees, w => w.IsMain);
 

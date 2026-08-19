@@ -12,7 +12,6 @@ namespace Chapter.Core;
 /// </summary>
 public sealed class WorkspaceService
 {
-    private readonly WorktreeService _worktrees;
     private readonly BaseBranchResolver _bases;
     private readonly DiffService _diff;
     private readonly RepositoryStateReader _state;
@@ -67,6 +66,15 @@ public sealed class WorkspaceService
     public TagService Tags { get; }
 
     /// <summary>
+    /// Lists the repository's worktrees and edits the set.
+    ///
+    /// Repository-wide rather than per-worktree, like the stash: adding, removing and
+    /// pruning are things done to a repository, and every one of them runs in its main
+    /// worktree whichever one the user is looking at.
+    /// </summary>
+    public WorktreeService Worktrees { get; }
+
+    /// <summary>
     /// The last repository-state reading per worktree, with the moment it was taken.
     ///
     /// The guard in this class's constructor runs before every mutation and costs four git
@@ -93,7 +101,6 @@ public sealed class WorkspaceService
         Git = git;
         Log = log ?? new OperationLog();
 
-        _worktrees = new WorktreeService(git);
         _bases = new BaseBranchResolver(git);
         _diff = new DiffService(git);
         _state = new RepositoryStateReader(git);
@@ -125,6 +132,7 @@ public sealed class WorkspaceService
         Stashes = new StashService(git, Writer, Undo);
         Branches = new BranchService(git, Writer, Undo, Stashes);
         Tags = new TagService(git, Writer, Undo);
+        Worktrees = new WorktreeService(git, Writer);
     }
 
     /// <summary>
@@ -158,12 +166,28 @@ public sealed class WorkspaceService
 
     public async Task<IReadOnlyList<Worktree>> GetWorktreesAsync(string repoPath, CancellationToken ct = default)
     {
-        var worktrees = await _worktrees.ListAsync(repoPath, ct).ConfigureAwait(false);
+        var worktrees = await Worktrees.ListAsync(repoPath, ct).ConfigureAwait(false);
 
         // Listing is what admits a worktree to the set the app will write to.
         foreach (var worktree in worktrees) _knownWorktrees[worktree.Path] = 0;
 
         return worktrees;
+    }
+
+    /// <summary>
+    /// Drops everything remembered about a worktree that has gone — removed, moved, pruned.
+    ///
+    /// The membership set is the important half. It is what permits a write, and it is
+    /// populated by listing rather than by re-deriving per call, so without this a removed
+    /// worktree's path stays writable for the rest of the session. After a <c>move</c> that
+    /// matters twice over: the old path would still be admitted while naming a directory
+    /// that is now somebody else's.
+    /// </summary>
+    public void ForgetWorktree(string worktreePath)
+    {
+        _knownWorktrees.TryRemove(worktreePath, out _);
+        InvalidateChanges(worktreePath);
+        InvalidateState(worktreePath);
     }
 
     /// <summary>Worktree plus its changed-file set for the requested scope.</summary>

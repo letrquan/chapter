@@ -256,6 +256,11 @@ public static class GitFailureClassifier
         Has(text, "would be overwritten by") ||
         Has(text, "refusing to lose untracked file") ||
         Has(text, "The following untracked working tree files would be overwritten") ||
+        // `git worktree remove` on a worktree with edits in it. Squarely "would lose work" —
+        // the directory and everything uncommitted in it is what --force throws away — and
+        // without this it classifies as Unknown, so the UI reports git's sentence instead of
+        // offering the force the sentence is telling the user about.
+        Has(text, "contains modified or untracked files") ||
         Has(text, "not uptodate") ||
         // Deleting a branch whose commits are on no other branch. Squarely "would lose
         // work": the commits become unreachable, and the way forward is `branch -D`.

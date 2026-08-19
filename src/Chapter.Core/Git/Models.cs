@@ -29,6 +29,9 @@ public sealed record Worktree
     public bool IsLocked { get; init; }
     public string? LockReason { get; init; }
 
+    /// <summary>Abbreviated <see cref="Head"/>, for a list that shows where each one sits.</summary>
+    public string ShortHead => Head.Length >= 7 ? Head[..7] : Head;
+
     /// <summary>Label for the rail: the branch if there is one, else the folder name.</summary>
     public string DisplayName =>
         Branch ?? (IsDetached && Head.Length >= 7 ? $"({Head[..7]})" : System.IO.Path.GetFileName(Path.TrimEnd('\\', '/')));
