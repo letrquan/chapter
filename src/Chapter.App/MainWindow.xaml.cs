@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -36,6 +36,7 @@ public partial class MainWindow : Window
         {
             FolderPicker = PickFolderAsync,
             ThemeChanged = ApplyWindowChrome,
+            Updater = new VelopackUpdater(),
         };
         _dispatcher.EventRaised += OnBackendEvent;
         _dispatcher.StartWatching();
@@ -153,7 +154,38 @@ public partial class MainWindow : Window
         };
 
         core.Navigate($"https://{VirtualHost}/index.html");
+
+        CheckForUpdatesInBackground();
     }
+
+    /// <summary>
+    /// Looks for a newer Chapter once the window is up, and fetches one if it exists.
+    ///
+    /// Not awaited, and deliberately after <c>Navigate</c>: the page is already being served
+    /// by the time this reaches the network, so a slow or unreachable GitHub delays nothing
+    /// the user is looking at. The result arrives as an <c>updateStatus</c> event whenever it
+    /// arrives, and the front-end draws it only once there is something to say.
+    ///
+    /// It downloads rather than merely asking, because the alternative puts a prompt in front
+    /// of a decision the user has no way to make — "do you want 3MB of deltas?" is a question
+    /// about nothing. Nothing is replaced until the app is restarted, and a user who never
+    /// restarts has lost only the disk the package sits on.
+    /// </summary>
+    private void CheckForUpdatesInBackground() =>
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (_dispatcher.Updater is not null)
+                    await _dispatcher.Updater.CheckAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // CheckAsync reports its own failures through the status. Anything reaching
+                // here is the updater itself failing, which must not take the window with it.
+                System.Diagnostics.Debug.WriteLine($"Update check failed: {ex.Message}");
+            }
+        });
 
     private async void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {

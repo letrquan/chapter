@@ -20,6 +20,36 @@ switching to it takes you there rather than failing.
 
 It is a review cockpit, not an IDE.
 
+## Install
+
+Chapter is in **beta**. Grab `Chapter-win-Setup.exe` from the
+[latest release](https://github.com/letrquan/chapter/releases) and run it.
+
+It installs per-user into `%LOCALAPPDATA%\Chapter` — no administrator prompt, no
+system-wide footprint — and puts shortcuts on the desktop and in the Start menu. The .NET
+runtime is bundled, so nothing else has to be installed first. Uninstall through Windows'
+own Apps list.
+
+### Updates
+
+Chapter updates itself. On launch it asks GitHub whether a newer release exists and, if one
+does, downloads it in the background while you carry on. Nothing is replaced until you
+restart: when a build is waiting, an arrow appears in the rail's footer, and pressing it
+restarts into the new version. Ignoring it costs nothing.
+
+The version you are running, and the state of any update, are in the help panel (`?`), which
+also has a **Check for updates** button for when you would rather not wait for the next launch.
+
+While the version you run is a prerelease — anything with a `-beta.n` suffix — you are
+offered prereleases. Install a stable build and you stop seeing them, without changing a
+setting.
+
+Only the first download is large. Updates after that are deltas against the build you have,
+which are a few megabytes rather than seventy.
+
+A copy built from source, or unzipped from `Chapter-win-Portable.zip`, has no installation to
+replace and does not update itself. The help panel says so rather than claiming to be current.
+
 ## Requirements
 
 | | |
@@ -71,6 +101,40 @@ dotnet test
 
 Tests that need a specific local repository skip themselves when it is absent, so the
 suite stays green on any machine.
+
+## Releasing
+
+The tag is the trigger, and the version in `Directory.Build.props` is the truth. Bump the
+file, commit it, then tag the same version:
+
+```bash
+git tag v0.1.0-beta.2
+git push origin main --tags
+```
+
+`.github/workflows/release.yml` takes it from there: it refuses a tag that disagrees with
+`Directory.Build.props`, runs the tests, builds through `build/pack.ps1`, and publishes a
+GitHub release carrying the installer, the portable zip, and the packages the running app
+downloads. A version with a prerelease suffix is published as a prerelease, which is also
+what decides whether existing beta users are offered it.
+
+The GitHub release *is* the update server — `VelopackUpdater` reads this repository's
+releases and nothing else — so deleting one takes it back from everybody who has not
+installed it yet.
+
+To build the same packages locally, without publishing anything:
+
+```powershell
+dotnet tool install -g vpk --version 1.2.0
+pwsh build/pack.ps1
+```
+
+They land in `artifacts/releases`. Deltas are built against whatever earlier packages are
+already in that directory, which is why CI downloads the previous release before packing —
+an empty directory produces a correct release in which every update is a full download.
+
+Nothing is code-signed yet, so Windows SmartScreen warns on first run. That is the next
+thing worth buying.
 
 ## How it fits together
 

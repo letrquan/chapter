@@ -1,8 +1,9 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Chapter.Core.Ai;
 using Chapter.Core.Editors;
 using Chapter.Core.Git;
 using Chapter.Core.Indexing;
+using Chapter.Core.Updates;
 
 namespace Chapter.Core.Contracts;
 
@@ -56,6 +57,16 @@ public sealed class BridgeDispatcher
     /// </summary>
     public Action<string>? ThemeChanged { get; set; }
 
+    /// <summary>
+    /// Self-update, when the shell has one to give. Supplied by the window for the same
+    /// reason as the picker and the theme hook: whether this copy can replace itself is a
+    /// fact about how Windows installed it, and Core deliberately knows nothing about that.
+    ///
+    /// Null in the test host, and in any future shell without an installer behind it. That
+    /// is a supported state, not a broken one — it answers <see cref="UpdateState.Unmanaged"/>.
+    /// </summary>
+    public IUpdater? Updater { get; set; }
+
     /// <summary>Raised when the backend wants to push an event to the front-end.</summary>
     public event Action<BridgeEvent>? EventRaised;
 
@@ -77,6 +88,11 @@ public sealed class BridgeDispatcher
         // a model does — so its text comes back the same way a file change does.
         Generator.Progress += progress => RaiseEvent("messageDelta", progress);
         Generator.Finished += result => RaiseEvent("messageGenerated", result);
+
+        // An update check outlives the call that asked for it, and the automatic one at
+        // startup was never asked for by the page at all, so both report the same way.
+        if (Updater is not null)
+            Updater.StatusChanged += status => RaiseEvent("updateStatus", status);
     }
 
     private async void OnWorktreeChanged(WorktreeWatcher.WorktreeChange change)
@@ -392,6 +408,16 @@ public sealed class BridgeDispatcher
         "searchFiles" => await SearchFilesAsync(request.ParamsAs<SearchRequest>(), ct).ConfigureAwait(false),
 
         "documentSymbols" => await DocumentSymbolsAsync(request.ParamsAs<FileRequest>(), ct).ConfigureAwait(false),
+
+        // --- self-update ------------------------------------------------------
+
+        "getUpdateStatus" => Updater?.Status ?? Unmanaged,
+
+        "checkForUpdate" => Updater is null
+            ? Unmanaged
+            : await Updater.CheckAsync(ct).ConfigureAwait(false),
+
+        "applyUpdate" => ApplyUpdate(),
 
         _ => throw new InvalidOperationException($"Unknown method '{request.Method}'"),
     };
@@ -773,6 +799,30 @@ public sealed class BridgeDispatcher
     /// UI is really asking is "can I generate now" — and answering it here saves a second call
     /// on the one path where the answer has just changed.
     /// </summary>
+    /// <summary>
+    /// The answer when there is no updater behind the seam at all. Distinct from "no update
+    /// available": the front-end draws nothing rather than claiming this build is current.
+    /// </summary>
+    private static readonly UpdateStatus Unmanaged = new() { State = UpdateState.Unmanaged };
+
+    /// <summary>
+    /// Restarts into the staged build, or explains why it cannot.
+    ///
+    /// The success path never returns — the process is gone before the reply is serialised —
+    /// so the value here is the refusal, and the refusal is the current status. The button
+    /// only exists while that status is <see cref="UpdateState.Ready"/>, and the check is
+    /// repeated anyway because the click and the state it was drawn from are separated by a
+    /// user, who may have taken a minute over it.
+    /// </summary>
+    private UpdateStatus ApplyUpdate()
+    {
+        var status = Updater?.Status ?? Unmanaged;
+        if (Updater is null || status.State is not UpdateState.Ready) return status;
+
+        Updater.ApplyAndRestart();
+        return status;
+    }
+
     private object SetApiKey(ApiKeyRequest req)
     {
         // Stored against whichever provider is configured. The prompt that collected it named

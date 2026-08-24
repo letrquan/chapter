@@ -1,0 +1,25 @@
+<Project>
+
+  <!--
+    The version every assembly reports, and the one the release pipeline packages.
+
+    Single source of truth: `.github/workflows/release.yml` reads it and refuses to build a
+    tag that disagrees, so a forgotten bump fails the release rather than shipping a binary
+    whose "Chapter 0.1.0-beta.1" in the help panel is a lie about which build is running.
+
+    Kept SemVer 2 — Velopack parses it, and a four-part 1.0.0.0 is not a version it accepts.
+  -->
+  <PropertyGroup>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>beta.1</VersionSuffix>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <Authors>letrquan</Authors>
+    <Company>letrquan</Company>
+    <Copyright>Copyright © letrquan</Copyright>
+    <RepositoryUrl>https://github.com/letrquan/chapter</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+</Project>

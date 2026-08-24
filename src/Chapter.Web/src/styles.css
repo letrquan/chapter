@@ -655,6 +655,29 @@ body.resizing {
   background: var(--accent-soft);
 }
 
+/* display:grid and display:flex on the two button classes outrank the user agent's
+   [hidden] { display: none }, so it has to be restated — the same footnote as
+   .commit-panel[hidden] and .tabstrip[hidden]. Without it the rail's update button is on
+   screen permanently, announcing an update that does not exist, and the help panel offers a
+   dead "Check for updates" to a copy that has just said it cannot. */
+.icon-btn[hidden],
+.btn[hidden] {
+  display: none;
+}
+
+/* The one button in the rail that appears rather than being there. Accented because it is
+   new information; not animated, because it is the least urgent thing in the window and a
+   pulsing icon in the corner of a review session earns nothing but resentment. */
+.icon-btn.update-ready {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.icon-btn.update-ready:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
 /* Segmented switch — a recessed track with one raised item, so which option is
    live is legible without relying on colour alone. */
 .segmented {
@@ -1312,9 +1335,35 @@ body.resizing {
 }
 
 
-.help-hint {
+/* The panel's footer carries two unrelated things — which build this is, and how to
+   close the panel — so the border and padding belong to the row rather than to either. */
+.help-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-4);
   border-top: 1px solid var(--border);
+  font-size: var(--fs-micro);
+}
+
+.help-version {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dimmer than the version beside it: the version is the fact somebody opened this to read,
+   the state is a footnote to it, and a download percentage that shouts is a download that
+   nobody asked for insisting on being watched. */
+.help-update {
+  color: var(--text-faint);
+}
+
+.help-foot .btn.small {
+  margin-left: var(--sp-1);
+}
+
+.help-hint {
+  margin-left: auto;
   color: var(--text-faint);
   font-size: var(--fs-micro);
 }

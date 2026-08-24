@@ -1,3 +1,5 @@
+import * as updates from './update'
+
 /**
  * The keyboard reference, as something you ask for.
  *
@@ -33,6 +35,34 @@ const SHORTCUTS: [keys: string, what: string][] = [
 
 let overlay: HTMLElement | null = null
 
+/**
+ * Keeps the version row in step with the updater, for as long as the panel exists.
+ *
+ * Wired here rather than in `main.ts` because the panel is built lazily and kept: there is
+ * no element to paint into until somebody presses `?`, and once there is, it outlives every
+ * open. Subscribing fires immediately with the current status, so the row is right on the
+ * first frame rather than blank until the updater next moves — which, if the startup check
+ * already finished, would be never.
+ */
+function paintUpdates(root: HTMLElement): void {
+  const version = root.querySelector<HTMLElement>('#help-version')!
+  const state = root.querySelector<HTMLElement>('#help-update')!
+  const action = root.querySelector<HTMLButtonElement>('#help-update-action')!
+
+  updates.subscribe((status) => {
+    version.textContent = status.currentVersion ? `Chapter ${status.currentVersion}` : 'Chapter'
+    state.textContent = updates.describe(status)
+    state.title = status.error ?? ''
+
+    action.textContent = updates.actionLabel(status)
+    action.disabled = !updates.actionEnabled(status)
+    action.classList.toggle('pop', status.state === 'ready')
+    action.hidden = status.state === 'unmanaged'
+  })
+
+  action.addEventListener('click', () => void updates.act(updates.status()))
+}
+
 function build(): void {
   overlay = document.createElement('div')
   overlay.className = 'help-backdrop'
@@ -47,10 +77,17 @@ function build(): void {
           ([keys, what]) => `<span class="keys">${keys}</span><span class="what">${what}</span>`,
         ).join('')}
       </div>
-      <div class="help-hint"><kbd>Esc</kbd> close</div>
+      <div class="help-foot">
+        <span class="help-version" id="help-version"></span>
+        <span class="help-update" id="help-update"></span>
+        <button class="btn small" id="help-update-action"></button>
+        <span class="help-hint"><kbd>Esc</kbd> close</span>
+      </div>
     </div>`
 
   document.body.appendChild(overlay)
+
+  paintUpdates(overlay)
 
   // Backdrop only — a mousedown that started inside the card and ended on the backdrop is
   // a text selection being dragged, not a dismissal.

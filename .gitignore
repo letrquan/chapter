@@ -13,3 +13,6 @@ TestResults/
 # Built by the run-chapter-linux skill.
 .claude/skills/run-chapter-linux/shell/window.png
 .claude/skills/run-chapter-linux/shell/launch.log
+
+# Release build output: publish tree, installers, update packages.
+artifacts/

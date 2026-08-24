@@ -23,6 +23,7 @@ import {
 import './styles.css'
 
 import { call, on, isHosted } from './bridge'
+import * as updates from './update'
 import {
   initCommitPanel,
   refreshCommitPanel,
@@ -214,6 +215,7 @@ function renderShell(): void {
         <div class="rail-body" id="rail-body"></div>
         <div class="rail-foot">
           <button class="btn" id="add-repo">${icons.plus}<span>Add repository</span></button>
+          <button class="icon-btn update-ready" id="update" hidden>${icons.download}</button>
           <button class="icon-btn" id="help" title="Keyboard shortcuts (?)">${icons.help}</button>
           <button class="icon-btn" id="theme-toggle" title="Toggle theme"></button>
         </div>
@@ -2177,6 +2179,8 @@ async function start(): Promise<void> {
 
   on('worktreesChanged', ({ repoPath }) => void loadWorktrees(repoPath))
 
+  wireUpdates()
+
   await loadRepos()
 
   renderFiles()
@@ -2185,6 +2189,31 @@ async function start(): Promise<void> {
 
   // Deliberately not awaited: badges fill in behind the already-usable UI.
   void prefetchBadges()
+}
+
+/**
+ * The rail's update button: present only while a new build is actually waiting.
+ *
+ * A button that is there permanently and does nothing on most days is furniture; this one
+ * appearing is the whole message. The detail — which version, and the option to check by
+ * hand — lives in the help panel, so this needs to carry only "there is one, press to take
+ * it", which a tooltip does.
+ *
+ * `initUpdates` is not awaited: it makes a bridge call, and the rail should not wait on the
+ * network to finish drawing. The subscription is in place first, so a status arriving before
+ * the call returns still paints.
+ */
+function wireUpdates(): void {
+  const button = document.getElementById('update') as HTMLButtonElement
+
+  updates.subscribe((status) => {
+    button.hidden = status.state !== 'ready'
+    button.title = `Chapter ${status.availableVersion ?? ''} is ready — restart to update`.replace('  ', ' ')
+  })
+
+  button.addEventListener('click', () => void updates.apply())
+
+  void updates.initUpdates()
 }
 
 function fatal(title: string, detail: string): void {

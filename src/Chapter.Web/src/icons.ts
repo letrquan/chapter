@@ -25,6 +25,10 @@ export const icons = {
   external: svg('<path d="M9.5 2.5H13.5V6.5"/><path d="M13.5 2.5 7.5 8.5"/>' +
     '<path d="M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"/>'),
 
+  // An arrow into a tray: the update is fetched and waiting, not being sent anywhere.
+  download: svg('<path d="M8 2.5v7"/><path d="M5 6.5 8 9.75l3-3.25"/>' +
+    '<path d="M2.75 11.5v1.25a.75.75 0 0 0 .75.75h9a.75.75 0 0 0 .75-.75V11.5"/>'),
+
   refresh: svg('<path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2v3.5H10"/>'),
 
   folder: svg('<path d="M1.75 3.75A.75.75 0 0 1 2.5 3h3.3a1 1 0 0 1 .78.37l.84 1.05a1 1 0 0 0 .78.38h5.3a.75.75 0 0 1 .75.75v6.7a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75Z"/>', 32),

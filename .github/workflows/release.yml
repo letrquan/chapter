@@ -1,0 +1,103 @@
+# Cuts a Chapter release from a tag.
+#
+# `git tag v0.1.0-beta.2 && git push origin v0.1.0-beta.2` is the whole ceremony. Everything
+# a user needs — the installer, the update feed, the packages the running app downloads —
+# is produced here and attached to the GitHub release, because that release *is* the update
+# server: `VelopackUpdater` reads this repository's releases and nothing else.
+#
+# The build steps live in build/pack.ps1 rather than in this file. A release that CI builds
+# one way and a maintainer builds another is a release whose failures cannot be reproduced
+# on the machine that has to fix them.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# vpk creates the release and uploads to it.
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: src/Chapter.Web/package-lock.json
+
+      # The tag and Directory.Build.props are two claims about the same thing, and the app
+      # believes the second: the version in the help panel, and the one the updater compares
+      # against, both come from the assembly. A tag that disagrees ships a build that
+      # misreports itself and an update that may never be offered — so it fails here instead.
+      - name: Check the tag against the version
+        id: version
+        shell: pwsh
+        run: |
+          $tagged = '${{ github.ref_name }}' -replace '^v', ''
+
+          [xml] $props = Get-Content Directory.Build.props
+          $prefix = $props.Project.PropertyGroup.VersionPrefix | Where-Object { $_ }
+          $suffix = $props.Project.PropertyGroup.VersionSuffix | Where-Object { $_ }
+          $declared = if ($suffix) { "$prefix-$suffix" } else { "$prefix" }
+
+          if ($tagged -ne $declared) {
+            throw "Tag ${{ github.ref_name }} says $tagged; Directory.Build.props says $declared. Bump the file, or move the tag."
+          }
+
+          "version=$declared" >> $env:GITHUB_OUTPUT
+          "prerelease=$(if ($declared -match '-') { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+
+      - name: Test
+        run: dotnet test --nologo
+
+      - name: Install the Velopack CLI
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      # Deltas are built by diffing against packages already in the output directory, so the
+      # previous release has to be on disk before packing. Allowed to fail: the first release
+      # has nothing to download, and a fetch that breaks costs users a full download rather
+      # than a broken one.
+      - name: Fetch the previous release
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $args = @(
+            'download', 'github'
+            '--repoUrl', '${{ github.server_url }}/${{ github.repository }}'
+            '--outputDir', 'artifacts/releases'
+            '--token', '${{ secrets.GITHUB_TOKEN }}'
+          )
+          if ('${{ steps.version.outputs.prerelease }}' -eq 'true') { $args += '--pre' }
+          vpk @args
+
+      - name: Build and package
+        shell: pwsh
+        run: ./build/pack.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Publish the release
+        shell: pwsh
+        run: |
+          $args = @(
+            'upload', 'github'
+            '--repoUrl', '${{ github.server_url }}/${{ github.repository }}'
+            '--outputDir', 'artifacts/releases'
+            '--token', '${{ secrets.GITHUB_TOKEN }}'
+            '--tag', '${{ github.ref_name }}'
+            '--releaseName', 'Chapter ${{ steps.version.outputs.version }}'
+            '--publish'
+            '--merge'
+          )
+          if ('${{ steps.version.outputs.prerelease }}' -eq 'true') { $args += '--pre' }
+          vpk @args

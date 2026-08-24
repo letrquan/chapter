@@ -696,6 +696,42 @@ export interface Api {
   getUndo: { params: { worktreePath: string }; result: UndoPayload }
   undo: { params: { worktreePath: string }; result: MutationPayload }
   getOperationLog: { params: { limit: number }; result: OperationLogEntry[] }
+
+  /** Which build is running, and whether a newer one is on its way. Never blocks. */
+  getUpdateStatus: { params: void; result: UpdateStatus }
+  /**
+   * Looks for a newer build and downloads one if it exists. The reply is the state when the
+   * call ends, but everything in between arrives as `updateStatus` events — a download over
+   * a slow connection outlasts the bridge's 60s ceiling the same way a model call does.
+   */
+  checkForUpdate: { params: void; result: UpdateStatus }
+  /**
+   * Restarts into the downloaded build. Returns only when it refuses: on success the process
+   * is replaced before a reply can be written.
+   */
+  applyUpdate: { params: void; result: UpdateStatus }
+}
+
+/**
+ * Where this copy stands relative to the newest published build.
+ * Mirrors `UpdateState` in `Chapter.Core/Updates/IUpdater.cs`.
+ *
+ * `unmanaged` is not `upToDate`: a build run from `bin/Debug`, or an unzipped portable copy,
+ * has no install to replace and never will. Collapsing the two would tell somebody they are
+ * current when nothing has been checked.
+ */
+export type UpdateState = 'unmanaged' | 'upToDate' | 'checking' | 'downloading' | 'ready' | 'failed'
+
+export interface UpdateStatus {
+  state: UpdateState
+  /** The running build, e.g. `0.1.0-beta.1`. Always present, updater or not. */
+  currentVersion: string
+  /** The build waiting to be installed, when there is one. */
+  availableVersion?: string
+  /** Download progress, 0–100. Only moves while `downloading`. */
+  percent: number
+  /** Why the last attempt failed, for `failed` alone. */
+  error?: string
 }
 
 export type ApiMethod = keyof Api
@@ -721,4 +757,9 @@ export interface Events {
   messageDelta: { id: string; worktreePath: string; message: string }
   /** A generation ended, however it ended. Fired exactly once per id. */
   messageGenerated: GenerationResult
+  /**
+   * The updater moved — a check began, a download progressed, a build was staged. Also the
+   * only way the page hears about the check the backend starts on its own at launch.
+   */
+  updateStatus: UpdateStatus
 }
