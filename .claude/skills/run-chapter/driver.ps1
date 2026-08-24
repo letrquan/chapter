@@ -164,8 +164,12 @@ function Save-Shot([IntPtr]$h, [string]$path) {
 $VK = @{
     'ctrl' = 0x11; 'shift' = 0x10; 'alt' = 0x12; 'enter' = 0x0D; 'escape' = 0x1B
     'esc' = 0x1B; 'tab' = 0x09; 'up' = 0x26; 'down' = 0x28; 'left' = 0x25; 'right' = 0x27
-    'pgup' = 0x21; 'pgdn' = 0x22; 'f12' = 0x7B; 'backspace' = 0x08
+    'pgup' = 0x21; 'pgdn' = 0x22; 'backspace' = 0x08
+    # OEM keys, by the character on a US layout, for bindings that are punctuation.
+    'slash' = 0xBF; 'comma' = 0xBC; 'period' = 0xBE; 'semicolon' = 0xBA
 }
+# F1..F12 are contiguous from VK_F1.
+1..12 | ForEach-Object { $VK["f$_"] = 0x6F + $_ }
 1..9 | ForEach-Object { $VK["$_"] = 0x30 + $_ }
 [char[]]'abcdefghijklmnopqrstuvwxyz' | ForEach-Object { $VK["$_"] = [int][char]([string]$_).ToUpper() }
 
