@@ -129,7 +129,12 @@ public sealed class WorktreeService(GitCli git, GitWriter writer)
     /// The branch to check out, or the name to create when <paramref name="createBranch"/>
     /// is set. Empty leaves it to git, which creates a branch named after the directory.
     /// </param>
-    /// <param name="startPoint">Where a newly created branch begins. Empty means HEAD.</param>
+    /// <param name="startPoint">
+    /// Where a newly created branch begins. Empty leaves it to git, which means HEAD — and
+    /// HEAD here is the <b>main</b> worktree's, because that is where the command runs, which
+    /// is rarely the worktree the user is looking at. That gap is why the front-end asks for
+    /// this rather than letting it default.
+    /// </param>
     public async Task<GitMutation> AddAsync(
         string anyPathInRepo, string path, string branch = "", bool createBranch = false,
         string startPoint = "", CancellationToken ct = default)
@@ -147,6 +152,9 @@ public sealed class WorktreeService(GitCli git, GitWriter writer)
             var invalid = BranchService.Validate(branch);
             if (invalid is not null) return Refused(host, operation, invalid);
         }
+
+        var optionish = Optionish(startPoint, "a start point") ?? Optionish(branch, "a branch name");
+        if (optionish is not null) return Refused(host, operation, optionish);
 
         string absolute;
         try
@@ -218,6 +226,21 @@ public sealed class WorktreeService(GitCli git, GitWriter writer)
             return $"{absolute} exists and could not be read";
         }
     }
+
+    /// <summary>
+    /// Refuses a positional argument that git would read as an option, or null when it is safe.
+    ///
+    /// Not a theoretical hole: <c>git worktree add</c> parses options wherever they appear,
+    /// including after the path. <c>add -b x &lt;path&gt; --force</c> is a *forced* add at
+    /// HEAD, not an add starting from a commit-ish called <c>--force</c> — so the user asks
+    /// for one thing and git silently runs another, here specifically the one thing this
+    /// panel refuses on purpose (a second worktree on a branch another already holds). Git
+    /// will not refuse it, because from git's side nothing went wrong, and <c>--</c> is not
+    /// accepted by this command. So it is refused before the argument is built. The path is
+    /// exempt by being absolute; anything the user typed is not.
+    /// </summary>
+    private static string? Optionish(string value, string what) =>
+        value.Trim().StartsWith('-') ? $"{what} cannot begin with a dash" : null;
 
     /// <summary>
     /// Removes a worktree.

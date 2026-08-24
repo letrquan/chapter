@@ -1140,17 +1140,26 @@ async function runFooterAction(action: string): Promise<void> {
 }
 
 /**
- * Adds a worktree: a name, then a place to put it.
+ * Adds a worktree: a name, where its branch starts, and a place to put it.
  *
- * Two questions rather than one, and neither is optional. The name decides the branch and
- * the path decides where the checkout lands, and conflating them — deriving the path from
- * the name and never showing it — is how a tool ends up creating directories somewhere the
- * user did not expect and cannot find.
+ * Three questions, none of them optional. The name decides the branch, the start point
+ * decides what is in it, and the path decides where the checkout lands. Conflating any of
+ * them — deriving the path from the name and never showing it, or letting the start point
+ * default out of sight — is how a tool ends up creating a directory the user cannot find,
+ * holding a branch that begins somewhere they did not choose.
  *
- * Whether the branch is created or checked out is *not* a third question. The panel already
+ * Whether the branch is created or checked out is *not* a fourth question. The panel already
  * holds the branch list, so it can tell which of the two this is, and asking the user to
  * classify something the app already knows is a question with a right answer — which is not
  * a question worth asking.
+ *
+ * The start point is asked only where it has no such right answer, which is the new-branch
+ * case alone. An existing branch already begins where it begins. A name matching exactly one
+ * remote is git's dwim, where the start point *is* that remote branch and an override could
+ * only produce the wrong one. What is left is the case where the answer was silently `HEAD` —
+ * and `HEAD` resolves in the repository's *main* worktree, because that is where every
+ * worktree mutation runs, so a user standing in a linked worktree got a branch off a commit
+ * they were not looking at. The label said "at this HEAD" and meant a different one.
  */
 async function newWorktree(): Promise<void> {
   if (!refs) return
@@ -1185,6 +1194,17 @@ async function newWorktree(): Promise<void> {
     return
   }
 
+  // Prefilled with this worktree's HEAD — the answer the old label claimed to be giving, and
+  // the one this question usually means — but prefilled rather than assumed, because the
+  // other common answer is `main` and reaching it should not mean leaving the app.
+  let startPoint = ''
+  if (existing == null && !dwim) {
+    const from = await prompt(`Where should ${name} start?`, headHere(), startPointOptions())
+    if (!from) return
+
+    startPoint = from
+  }
+
   // Asked of the backend rather than assembled here: which layout this repository uses is a
   // fact about the repository, and joining paths is a fact about the platform. Neither is
   // something the window can work out from what it has.
@@ -1203,7 +1223,7 @@ async function newWorktree(): Promise<void> {
     ? `Where should the worktree for ${name} go?`
     : dwim
       ? `Where should ${name} go? It is created from ${tracking[0]!.name}.`
-      : `Where should ${name} go? A new branch is created.`
+      : `Where should ${name} go? A new branch is created from ${startPoint}.`
 
   const path = await prompt(label, suggestion)
   if (!path) return
@@ -1214,8 +1234,40 @@ async function newWorktree(): Promise<void> {
       path,
       branch: name,
       createBranch: existing == null && !dwim,
+      startPoint,
     }),
   )
+}
+
+/**
+ * What this worktree's HEAD is called, in a form git will take as a start point.
+ *
+ * The branch name where there is one, and the sha where HEAD is detached — a detached
+ * worktree has no name to offer. `HEAD` itself is never the answer: it resolves in the main
+ * worktree, which is precisely the confusion this question exists to remove.
+ */
+function headHere(): string {
+  if (!refs) return ''
+  if (refs.current) return refs.current
+
+  return refs.worktrees.find((w) => samePath(w.path, worktreePath ?? ''))?.shortHead ?? ''
+}
+
+/**
+ * Names worth completing in the start point box: every branch and tag the panel already holds.
+ *
+ * A list to complete from, not a list to pick from. Git takes far more than these — `main~2`,
+ * a sha, `origin/main@{yesterday}` — so a picker would have to refuse answers that work.
+ * Locals first, since a new branch usually starts from one.
+ */
+function startPointOptions(): string[] {
+  if (!refs) return []
+
+  return [
+    ...refs.branches.filter((b) => !b.isRemote).map((b) => b.name),
+    ...refs.branches.filter((b) => b.isRemote).map((b) => b.name),
+    ...refs.tags.map((t) => t.name),
+  ]
 }
 
 /**
@@ -1265,17 +1317,35 @@ async function pruneWorktrees(): Promise<void> {
    destructive — and a second modal stacked on this one would take the keyboard from it.
    ========================================================================== */
 
-function prompt(question: string, initial: string): Promise<string | null> {
+function prompt(
+  question: string,
+  initial: string,
+  suggestions: string[] = [],
+): Promise<string | null> {
   return new Promise((resolve) => {
     const host = document.createElement('div')
     host.className = 'refs-prompt'
+
+    // A datalist rather than rows of our own: it completes without taking the keyboard, which
+    // is the whole reason this question is asked here instead of in a second dialog. The id
+    // is fixed because the footer holds one prompt at a time — the previous one is replaced,
+    // not stacked, so there is never a second datalist to collide with.
+    const options =
+      suggestions.length > 0
+        ? `<datalist id="refs-prompt-options">${suggestions
+            .map((value) => `<option value="${esc(value)}"></option>`)
+            .join('')}</datalist>`
+        : ''
+
     host.innerHTML = `
       <label class="refs-prompt-label">${esc(question)}</label>
       <div class="refs-prompt-row">
-        <input class="refs-prompt-input" type="text" spellcheck="false" autocomplete="off" />
+        <input class="refs-prompt-input" type="text" spellcheck="false" autocomplete="off"
+               ${options ? 'list="refs-prompt-options"' : ''} />
         <button class="btn small" data-prompt-cancel>Cancel</button>
         <button class="btn small pop" data-prompt-ok>OK</button>
-      </div>`
+      </div>
+      ${options}`
 
     footer.replaceChildren(host)
 
