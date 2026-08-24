@@ -285,10 +285,20 @@ function render(): void {
 
   // The groups scroll; the box stays put. A commit button that scrolls off the bottom of a
   // long list of changes is a commit button nobody can find.
+  // Both groups empty is not two empty groups.
+  //
+  // Rendered separately they say "Nothing staged yet." and "Everything is staged." at the
+  // same time. Each is true on its own and together they read as a bug: the panel appears
+  // to be contradicting itself about a working tree where nothing has happened at all.
+  const nothing = view.staged.length === 0 && view.unstaged.length === 0
+
   host.innerHTML = `
     <div class="commit-scroll">
-      ${renderGroup('staged', view.staged)}
-      ${renderGroup('unstaged', view.unstaged)}
+      ${
+        nothing
+          ? `<div class="commit-empty">Nothing to commit — the working tree is clean.</div>`
+          : `${renderGroup('staged', view.staged)}${renderGroup('unstaged', view.unstaged)}`
+      }
     </div>
     ${renderBox(view, draft)}`
 
@@ -331,6 +341,8 @@ function renderGroup(side: 'staged' | 'unstaged', files: ChangedFile[]): string 
            ${isStaged ? icons.unstage : icons.stage}<span>${bulkLabel}</span>
          </button>`
 
+  // Only ever reached with the other group non-empty — `render` handles the both-empty
+  // case itself — so both of these say something the other group does not already say.
   const body =
     files.length === 0
       ? `<div class="group-empty">${
@@ -416,10 +428,21 @@ function renderBox(state: CommitViewPayload, draft: CommitDraft): string {
          no git identity configured
        </span>`
 
+  // The leaf of the branch name, not the whole thing. An agent branch is long enough to
+  // wrap this line to two and shift the entire box — and the rail three inches to the left
+  // is already showing which worktree this is. The full name is on the title.
+  //
+  // `== null`, not `=== null`: a detached HEAD sends no branch at all — the backend omits
+  // null members — so the field arrives `undefined` and strict equality waves it straight
+  // through to `.slice()`. See the note at the top of protocol.ts.
+  const branchLeaf = state.branch == null ? null : state.branch.slice(state.branch.lastIndexOf('/') + 1)
+  const branchTitle = state.branch == null ? '' : ` title="${esc(state.branch)}"`
+  const named = `<strong${branchTitle}>${esc(branchLeaf ?? 'main')}</strong>`
+
   const target = state.isUnborn
-    ? `first commit on <strong>${esc(state.branch ?? 'main')}</strong>`
+    ? `first commit on ${named}`
     : state.branch
-      ? `on <strong>${esc(state.branch)}</strong>`
+      ? `on ${named}`
       : 'on a <strong>detached HEAD</strong>'
 
   // Which readiness applies depends on the toggle, and they genuinely differ: an amend
@@ -428,15 +451,57 @@ function renderBox(state: CommitViewPayload, draft: CommitDraft): string {
   const blockedReason = draft.amend ? state.amendBlockedReason : state.blockedReason
   const note = draft.amend ? state.amendNote : state.note
 
-  const problems = (review?.problems ?? [])
-    .map(
-      (problem) =>
-        `<li class="${problem.severity}">${esc(problem.message)}</li>`,
-    )
-    .join('')
+  // Nothing to say about a message nobody has written. The backend answers honestly that
+  // an empty string has no subject line, and printing that under an untouched box tells
+  // the user off for not having typed yet — advice arriving before the thing it advises on.
+  const problems =
+    draft.message.trim().length === 0
+      ? ''
+      : (review?.problems ?? [])
+          .map((problem) => `<li class="${problem.severity}">${esc(problem.message)}</li>`)
+          .join('')
 
   const blocked = !canGo
   const label = draft.amend ? 'Amend' : 'Commit'
+
+  // Nothing changed, nothing staged, nothing typed — so every remaining row of this box
+  // is about work that does not exist. Collapsed to the one line that is still true, plus
+  // the way back in: an amend needs nothing staged (rewording the last commit is the
+  // commonest reason to amend at all), and ticking it renders the box in full.
+  //
+  // A generation in flight is not idle, whatever the tree looks like. `write` clears the
+  // draft before the first token arrives, so a repaint during those seconds sees an empty
+  // message — and if an agent commits the staged set in the same moment, which is this
+  // app's ordinary case, the collapse would take away the Stop button and the box the
+  // text is streaming into. Same for the key prompt: it is a half-finished question, and
+  // a watcher notification must not close it.
+  const idle =
+    !draft.amend &&
+    !writing &&
+    !askingForKey &&
+    state.staged.length === 0 &&
+    state.unstaged.length === 0 &&
+    draft.message.trim().length === 0
+
+  if (idle) {
+    return `
+      <section class="commit-box idle">
+        <div class="commit-head">
+          <span class="commit-target">${target}</span>
+          ${identityRow}
+        </div>
+        ${
+          state.isUnborn
+            ? ''
+            : `<div class="commit-options">
+                 <label title="Reword or add to the previous commit">
+                   <input type="checkbox" data-opt="amend" />
+                   <span>Amend the last commit</span>
+                 </label>
+               </div>`
+        }
+      </section>`
+  }
 
   return `
     <section class="commit-box">
@@ -479,7 +544,11 @@ function renderBox(state: CommitViewPayload, draft: CommitDraft): string {
         </label>
       </div>
 
-      <button class="btn pop commit-submit" data-action="commit"
+      <!-- Filled only when it can actually fire. A full-width saturated primary that
+           refuses the click makes the loudest thing in the window the one thing that does
+           nothing, and teaches the eye to stop reading it — including on the occasions
+           when it would have worked. -->
+      <button class="btn ${blocked ? '' : 'pop'} commit-submit" data-action="commit"
               ${blocked ? 'disabled' : ''}
               title="${blocked ? esc(state.blockedReason ?? '') : `${label} (Ctrl+Enter)`}">
         ${icons.commit}<span>${label}${
@@ -979,6 +1048,18 @@ async function reviewDraft(): Promise<void> {
   const worktreePath = view.worktreePath
   const draft = draftFor(worktreePath)
   const mine = generation
+
+  // Nothing to advise on, so nothing is asked and nothing is shown. The backend answers
+  // truthfully that an empty string has no subject line, and printing that under a box
+  // nobody has typed in yet tells the user off for not having started — advice arriving
+  // before the thing it advises on. Cleared here rather than only in `renderBox`, because
+  // `paintProblems` writes the list into the DOM directly and would otherwise leave the
+  // last message's warnings standing over an empty box.
+  if (draft.message.trim().length === 0) {
+    review = null
+    paintProblems()
+    return
+  }
 
   try {
     const next = await call('reviewMessage', { worktreePath, message: draft.message })

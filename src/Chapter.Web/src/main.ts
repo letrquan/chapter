@@ -32,8 +32,9 @@ import {
   writeMessage,
 } from './commit'
 import { isConfirmOpen } from './confirm'
+import { close as closeHelp, isOpen as isHelpOpen, toggle as toggleHelp } from './help'
 import { initHunkBar, showHunkBar, hideHunkBar, stepHunk, updateSelectionState } from './hunks'
-import { brandMark, icons, kindLetter } from './icons'
+import { icons, kindLetter } from './icons'
 import { registerCSharpNavigation, setNavigateHandler } from './navigation'
 import { openPalette, close as closePalette, isOpen as isPaletteOpen } from './palette'
 import { renderPreview, cancelPreview } from './preview'
@@ -167,6 +168,22 @@ function splitPath(path: string): { dir: string; name: string } {
     : { dir: path.slice(0, slash), name: path.slice(slash + 1) }
 }
 
+/**
+ * Splits a ref at its last slash.
+ *
+ * Agent worktrees are named `book-agent/<run>/<task-uuid>`, and a single truncating
+ * label renders a rail full of them as identical rows reading `book-agent/e7d74e…` —
+ * the ellipsis removes precisely the part that tells them apart. The prefix is shared
+ * by every sibling, so it identifies nothing and is the half that should give up its
+ * width first.
+ */
+function splitRef(name: string): { prefix: string; leaf: string } {
+  const cut = name.lastIndexOf('/')
+  return cut === -1
+    ? { prefix: '', leaf: name }
+    : { prefix: name.slice(0, cut + 1), leaf: name.slice(cut + 1) }
+}
+
 /** Truncates a directory from the left, since the tail is the informative half. */
 function shortenDir(dir: string, max = 34): string {
   return dir.length <= max ? dir : '…' + dir.slice(dir.length - max + 1)
@@ -194,22 +211,18 @@ function renderShell(): void {
   document.getElementById('root')!.innerHTML = `
     <div class="app">
       <aside class="rail card" id="rail">
-        <div class="rail-head">
-          ${brandMark(18)}
-          <span class="brand-name">Chapter</span>
-          <button class="icon-btn" id="theme-toggle" title="Toggle theme"></button>
-        </div>
         <div class="rail-body" id="rail-body"></div>
         <div class="rail-foot">
           <button class="btn" id="add-repo">${icons.plus}<span>Add repository</span></button>
+          <button class="icon-btn" id="help" title="Keyboard shortcuts (?)">${icons.help}</button>
+          <button class="icon-btn" id="theme-toggle" title="Toggle theme"></button>
         </div>
       </aside>
 
       <section class="files card">
         <div class="files-head">
-          <span class="eyebrow">Changed</span>
+          <span class="eyebrow">Changes</span>
           <span class="files-count" id="files-count"></span>
-          <span class="files-stat" id="files-stat"></span>
           <button class="icon-btn" id="refs"
                   title="Branches, worktrees, stashes and tags (Ctrl+B)">${icons.branch}</button>
           <button class="icon-btn" id="undo" title="Nothing to undo" disabled>${icons.undo}</button>
@@ -245,7 +258,9 @@ function renderShell(): void {
         <div class="hunk-bar" id="hunk-bar" hidden></div>
         <div class="editor-host" id="editor-host">
           <div class="markdown-preview" id="preview-host" hidden></div>
-          <div class="placeholder" id="editor-empty">${EMPTY_STATE_HTML}</div>
+          <!-- Filled by showEmptyState once there is a worktree to describe; the shell is
+               built before anything has been read. -->
+          <div class="placeholder" id="editor-empty">${restingState()}</div>
         </div>
       </section>
 
@@ -294,14 +309,24 @@ function renderRail(): void {
 
         const title = worktree.isPrunable
           ? `Unavailable — ${esc(worktree.prunableReason ?? 'worktree directory is missing')}`
-          : esc(worktree.path)
+          : `${esc(worktree.displayName)}\n${esc(worktree.path)}`
+
+        // Whole name or leaf alone — never a truncated prefix. Letting the prefix ellipsis
+        // itself produced `f…model-and-provi…`, which is two ellipses and less legible
+        // than either half on its own. The rail's label column is about 22 characters at
+        // this width, so a name that fits is shown entire and a name that does not gives
+        // up the part every sibling shares. The full name is on the title either way.
+        const { prefix, leaf } = splitRef(worktree.displayName)
+        const whole = prefix !== '' && worktree.displayName.length <= 22
 
         return `
           <button class="wt ${isActive ? 'active' : ''} ${worktree.isUsable ? '' : 'unusable'}"
                   data-worktree="${esc(worktree.path)}"
                   title="${title}">
             <span class="wt-icon">${worktree.isUsable ? icons.branch : icons.warning}</span>
-            <span class="wt-label">${esc(worktree.displayName)}</span>
+            <span class="wt-label">${
+              whole ? `<span class="wt-prefix">${esc(prefix)}</span>` : ''
+            }<span class="wt-leaf">${esc(leaf)}</span></span>
             ${badge}
             ${key ? `<span class="wt-key">${key}</span>` : ''}
           </button>`
@@ -363,14 +388,18 @@ function renderFiles(restoreSaved = false): void {
   const list = document.getElementById('files-list')!
   const currentScroll = list.scrollTop
   const count = document.getElementById('files-count')!
-  const stat = document.getElementById('files-stat')!
   const base = document.getElementById('files-base')!
+
+  // `bare` hides the description, and it is set from the *previous* scan. Cleared up front
+  // rather than per branch: left on, it renders "Loading…" into a span with display:none —
+  // invisible on exactly the transition it exists for, since arriving from the Uncommitted
+  // or Last scope is what set it.
+  base.classList.remove('bare')
 
   if (!state.active) {
     list.innerHTML = ''
     count.textContent = ''
-    stat.innerHTML = ''
-    base.textContent = ''
+    base.innerHTML = ''
     return
   }
 
@@ -379,37 +408,94 @@ function renderFiles(restoreSaved = false): void {
   if (entry.loading && !entry.changes) {
     list.innerHTML = Array.from({ length: 7 }, () => '<div class="skeleton"></div>').join('')
     count.textContent = ''
-    stat.innerHTML = ''
-    base.textContent = 'Loading…'
+    base.innerHTML = '<span class="files-base-what">Loading…</span>'
+    refreshRestingState()
     return
   }
 
   if (entry.error) {
     list.innerHTML = `<div class="files-empty">${esc(entry.error)}</div>`
     count.textContent = ''
-    stat.innerHTML = ''
-    base.textContent = ''
+    base.innerHTML = ''
+    // Without this the pane on the right keeps saying "Reading what changed…" forever:
+    // `restingSummary` has a branch for the error and this is the only render that
+    // reaches it.
+    refreshRestingState()
     return
   }
 
   const changes = entry.changes
   if (!changes) return
 
-  count.textContent = String(changes.files.length)
-  base.textContent = changes.base.description
-  base.title = `${changes.base.description} · ${changes.base.sha.slice(0, 10)}`
-  stat.innerHTML =
-    changes.files.length === 0
-      ? ''
-      : `<span class="stat-add">+${changes.totalAdded}</span><span class="stat-del">−${changes.totalRemoved}</span>`
+  // The count reads as part of the title — "Changes 12" — rather than as a caps label
+  // with a bare integer after it, and it says nothing at all when there is nothing to
+  // count. A zero next to a heading is a heading that looks broken.
+  count.textContent = changes.files.length === 0 ? '' : String(changes.files.length)
+
+  const label = baseLabel(changes.base)
+
+  base.innerHTML = `
+    <span class="files-base-what" title="${esc(changes.base.description)} · ${esc(
+      changes.base.sha.slice(0, 10),
+    )}">${esc(label)}</span>
+    ${
+      changes.files.length === 0
+        ? ''
+        : `<span class="files-stat"><span class="stat-add">+${changes.totalAdded}</span><span class="stat-del">−${changes.totalRemoved}</span></span>`
+    }`
+  base.classList.toggle('bare', label === '')
 
   if (changes.files.length === 0) {
     list.innerHTML = `<div class="files-empty">${esc(emptyChangesMessage(changes.base))}</div>`
+    refreshRestingState()
     return
   }
 
   list.innerHTML = changes.files.map((file) => fileRow(file, entry.activePath === file.path)).join('')
   list.scrollTop = restoreSaved ? entry.filesScroll : currentScroll
+
+  // The pane on the right summarises the same scan while nothing is open in it.
+  refreshRestingState()
+}
+
+/**
+ * The short form for the line under the scope switch.
+ *
+ * Empty for two of the four scopes, because the switch directly above it is already
+ * showing the word: `base.description` for the uncommitted scope is the string
+ * "uncommitted changes", which under a button labelled *Uncommitted* is a caption
+ * repeating its own picture.
+ */
+function baseLabel(base: DiffBase): string {
+  switch (base.scope) {
+    case 'uncommitted':
+    case 'lastCommit':
+      return ''
+    case 'committed':
+      return base.branchName ? `since ${base.branchName}` : base.description
+    default:
+      return base.description
+  }
+}
+
+/**
+ * The same fact as a phrase, for the resting pane, which has room for a sentence.
+ *
+ * Written out per scope rather than dropped into "against ___" for the same reason
+ * `emptyChangesMessage` is: only one of the four descriptions survives it. The others
+ * produce "against uncommitted changes", which names the thing as its own baseline.
+ */
+function baseSentence(base: DiffBase): string {
+  switch (base.scope) {
+    case 'uncommitted':
+      return 'in the working tree, staged and unstaged'
+    case 'committed':
+      return base.branchName ? `committed since ${base.branchName}` : 'committed since the base'
+    case 'lastCommit':
+      return 'in the most recent commit'
+    default:
+      return `against ${base.description}`
+  }
 }
 
 /**
@@ -1167,10 +1253,26 @@ function showEmptyState(visible: boolean): void {
   if (!empty) return
 
   if (visible) {
-    empty.innerHTML = EMPTY_STATE_HTML
+    empty.innerHTML = restingState()
     showPreview(false)
   }
   empty.style.display = visible ? 'grid' : 'none'
+}
+
+/**
+ * Repaints the resting summary when the scan behind it changes.
+ *
+ * Guarded on what is actually on screen rather than on a flag: the same element also
+ * carries notices ("Binary file", "Could not open file"), and a watcher notification
+ * arriving while one is up must not replace somebody's explanation with a summary of a
+ * worktree they can already see.
+ */
+function refreshRestingState(): void {
+  const empty = document.getElementById('editor-empty')
+  if (!empty || empty.style.display === 'none') return
+  if (!empty.querySelector('[data-resting]')) return
+
+  empty.innerHTML = restingState()
 }
 
 function showPreview(visible: boolean): void {
@@ -1196,36 +1298,120 @@ function showNotice(title: string, detail: string): void {
   if (!empty) return
 
   empty.innerHTML = `
-    <div class="placeholder-title">${esc(title)}</div>
-    <div class="placeholder-hint">${esc(detail)}</div>`
+    <div class="placeholder-body">
+      <div class="placeholder-title">${esc(title)}</div>
+      <div class="placeholder-hint">${esc(detail)}</div>
+    </div>`
   empty.style.display = 'grid'
 }
 
-/** The keyboard legend doubles as the app's only documentation of itself. */
-const SHORTCUTS: [keys: string, what: string][] = [
-  ['<kbd>Ctrl</kbd> <kbd>1</kbd>–<kbd>9</kbd>', 'Switch worktree'],
-  ['<kbd>Ctrl</kbd> <kbd>P</kbd>', 'Find file'],
-  ['<kbd>Ctrl</kbd> <kbd>T</kbd>', 'Find symbol'],
-  ['<kbd>Ctrl</kbd> <kbd>B</kbd>', 'Branches, stashes and tags'],
-  ['<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>B</kbd>', 'Worktrees: add, remove, prune'],
-  ['<kbd>Ctrl</kbd> <kbd>D</kbd>', 'Diff or code'],
-  ['<kbd>Ctrl</kbd> <kbd>S</kbd>', 'Save the open file'],
-  // The three the commit view adds. This legend is the only place the app documents
-  // itself, so a binding missing from it is a binding nobody finds.
-  ['<kbd>Alt</kbd> <kbd>↑</kbd> <kbd>↓</kbd>', 'Previous / next hunk'],
-  ['<kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Z</kbd>', 'Undo the last git operation'],
-  ['<kbd>Ctrl</kbd> <kbd>R</kbd>', 'Refresh'],
-]
+/**
+ * What the editor pane shows when nothing is open in it.
+ *
+ * This is the app's resting face, and it was the mark at 44px over "Nothing open" over a
+ * ten-row keyboard legend, all centred in the largest surface in the window. None of that
+ * is about the work: it is the app introducing itself, permanently, to somebody who has
+ * been using it all afternoon. The legend now lives behind F1 — see `help.ts`.
+ *
+ * What it says instead is which worktree you are standing in, since that is the question
+ * this app exists to answer and the rail can only show a truncated name of it. Every
+ * field comes from the scan already in hand — no call is made to fill this in, because a
+ * summary that costs a git process is a summary that arrives after you have stopped
+ * looking at it.
+ */
+function restingState(): string {
+  return `<div class="placeholder-body" data-resting>${restingSummary()}</div>`
+}
 
-const EMPTY_STATE_HTML = `
-  ${brandMark(44)}
-  <div class="placeholder-title">Nothing open</div>
-  <div class="placeholder-hint">Pick a changed file to see its diff.</div>
-  <div class="shortcuts">
-    ${SHORTCUTS.map(
-      ([keys, what]) => `<span class="keys">${keys}</span><span class="what">${what}</span>`,
-    ).join('')}
-  </div>`
+function restingSummary(): string {
+  if (!state.active) {
+    return `
+      <div class="placeholder-title">No worktree open</div>
+      <div class="placeholder-hint">${
+        state.repos.length === 0
+          ? 'Add a repository to see the worktrees its agents are working in.'
+          : 'Pick one from the rail on the left.'
+      }</div>`
+  }
+
+  const entry = worktreeState(state.active)
+  const changes = entry.changes
+  const worktree = changes?.worktree ?? findWorktree(state.active)
+  const repo = repoOf(state.active)
+
+  // The branch, or the name the rail shows when HEAD is detached and there is no branch
+  // to name.
+  const { prefix, leaf } = splitRef(worktree?.branch ?? worktree?.displayName ?? state.active)
+
+  const meta = [
+    repo ? esc(repo.name) : null,
+    worktree ? `<span class="sha">${esc(worktree.shortHead)}</span>` : null,
+    worktree?.isDetached ? 'detached HEAD' : null,
+    worktree?.isMain ? 'main worktree' : null,
+  ].filter((part): part is string => part !== null)
+
+  // Ordered by how much they change what you can do next, and only one is ever shown:
+  // stacking amber panels in an empty pane is how a warning stops being read.
+  const flag = !worktree
+    ? null
+    : worktree.isPrunable
+      ? `This worktree’s directory is gone — ${esc(worktree.prunableReason ?? 'git still has a record of it')}. Ctrl+Shift+B to prune it.`
+      : worktree.isLocked
+        ? `Locked${worktree.lockReason ? ` — ${esc(worktree.lockReason)}` : ''}. It cannot be moved or pruned until it is unlocked.`
+        : null
+
+  const body =
+    entry.error !== undefined
+      ? `<div class="rest-hint">${esc(entry.error)}</div>`
+      : !changes
+        ? `<div class="rest-hint">Reading what changed…</div>`
+        : // Both cases end on the same "against …" line rather than the empty one
+          // borrowing `emptyChangesMessage`, which the file list three inches to the left
+          // is already showing word for word.
+          `<div class="rest-stats">
+             ${
+               changes.files.length === 0
+                 ? '<span>Nothing changed</span>'
+                 : `<span>${changes.files.length} file${
+                     changes.files.length === 1 ? '' : 's'
+                   } changed</span>
+                    <span class="stat-add">+${changes.totalAdded}</span>
+                    <span class="stat-del">−${changes.totalRemoved}</span>`
+             }
+           </div>
+           <div class="rest-base">${esc(baseSentence(changes.base))}</div>
+           ${
+             changes.files.length === 0
+               ? ''
+               : '<div class="rest-hint">Pick one from the list to see its diff.</div>'
+           }`
+
+  return `
+    ${prefix ? `<div class="rest-prefix">${esc(prefix)}</div>` : ''}
+    <div class="rest-branch">${esc(leaf)}</div>
+    ${
+      meta.length === 0
+        ? ''
+        : `<div class="rest-meta">${meta.join('<span class="rest-sep">·</span>')}</div>`
+    }
+    ${body}
+    ${flag ? `<div class="rest-flag">${icons.warning}<span>${flag}</span></div>` : ''}`
+}
+
+function findWorktree(path: string): Worktree | null {
+  for (const list of state.worktrees.values()) {
+    const found = list.find((worktree) => worktree.path === path)
+    if (found) return found
+  }
+  return null
+}
+
+function repoOf(worktreePath: string): RepoInfo | null {
+  for (const repo of state.repos) {
+    if ((state.worktrees.get(repo.path) ?? []).some((w) => w.path === worktreePath)) return repo
+  }
+  return null
+}
 
 /* ==========================================================================
    Saving, and the edits the app must not throw away
@@ -1502,6 +1688,8 @@ function applyTheme(theme: 'dark' | 'light'): void {
 function wireEvents(): void {
   document.getElementById('add-repo')!.addEventListener('click', () => void addRepo())
 
+  document.getElementById('help')!.addEventListener('click', () => toggleHelp())
+
   document.getElementById('theme-toggle')!.addEventListener('click', () => {
     const next = state.theme === 'dark' ? 'light' : 'dark'
     applyTheme(next)
@@ -1738,6 +1926,16 @@ function toggleMode(): void {
   void setMode(tab?.mode === 'diff' ? 'code' : 'diff')
 }
 
+/** Whether the caret is in something that takes text — a field, a box, or Monaco. */
+function isTyping(): boolean {
+  const element = document.activeElement as HTMLElement | null
+  if (!element) return false
+
+  return (
+    element.tagName === 'INPUT' || element.tagName === 'TEXTAREA' || element.isContentEditable
+  )
+}
+
 function wireKeyboard(): void {
   window.addEventListener('keydown', (event) => {
     const ctrl = event.ctrlKey || event.metaKey
@@ -1750,6 +1948,26 @@ function wireKeyboard(): void {
     // panel whose rows were read against the one it was opened on.
     if (isRefsOpen()) {
       if (event.key === 'Escape') closeRefs()
+      return
+    }
+
+    // ? opens the keyboard reference, and it has to be the primary binding rather than
+    // the courtesy one: F1 never arrives. Chromium claims it for its own help before the
+    // page sees a keydown, and WebView2 inherits that — the listener below simply does not
+    // run. It is still accepted here for the host that one day does deliver it.
+    //
+    // ? is the only unmodified key the app binds, so it is the only one that can be taken
+    // out of somebody's typing: without the guard, a question mark in a commit message
+    // opens this panel instead of reaching the box. Monaco's caret is a textarea too, so
+    // the same test covers the editor. Toggling, so the key that opened it closes it.
+    if (event.key === 'F1' || (event.key === '?' && !ctrl && !event.altKey && !isTyping())) {
+      event.preventDefault()
+      toggleHelp()
+      return
+    }
+
+    if (isHelpOpen()) {
+      if (event.key === 'Escape') closeHelp()
       return
     }
 
@@ -1972,8 +2190,10 @@ async function start(): Promise<void> {
 function fatal(title: string, detail: string): void {
   document.getElementById('root')!.innerHTML = `
     <div class="placeholder">
-      <div class="placeholder-title">${esc(title)}</div>
-      <div class="placeholder-error">${esc(detail)}</div>
+      <div class="placeholder-body">
+        <div class="placeholder-title">${esc(title)}</div>
+        <div class="placeholder-error">${esc(detail)}</div>
+      </div>
     </div>`
 }
 

@@ -49,7 +49,6 @@
   --mod: #d29922;
   --rename: #a78bfa;
 
-  --shadow-card: 0 1px 3px #00000038;
   --shadow-popover: 0 18px 50px -14px #000000d9, 0 0 0 1px #ffffff12;
   --scroll-thumb: #262d3a;
   --scroll-thumb-hover: #37404f;
@@ -84,7 +83,6 @@
   --mod: #9a6700;
   --rename: #8250df;
 
-  --shadow-card: 0 1px 2px #14181f14;
   --shadow-popover: 0 18px 50px -16px #14181f38, 0 0 0 1px #14181f14;
   --scroll-thumb: #ccd3dd;
   --scroll-thumb-hover: #aeb7c4;
@@ -97,8 +95,35 @@
   --files-w: 300px;
   --row-h: 26px;
 
-  /* The gutter between cards. The splitters live in it, so the two are one number. */
-  --gap: 8px;
+  /* The width the splitters can be grabbed by. They straddle a 1px border rather than
+     filling a gutter, so this is a hit area and not a visible gap. */
+  --grip: 9px;
+
+  /* Type scale.
+
+     Five sizes, and the interface uses only these. It previously carried ten — 8, 10,
+     10.5, 11, 11.5, 12, 12.25, 12.5, 13, 14 — over a 1.4x range, which is not a scale
+     but a set of nudges: no size meant "this matters" because every size was within a
+     pixel of its neighbour. Rendered markdown keeps its own larger measure, since that
+     is document text rather than chrome.
+
+     --fs-lg exists for exactly one thing at a time. If two are on screen, one is wrong. */
+  --fs-micro: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 15px;
+  --fs-lg: 21px;
+
+  /* Spacing, on a 4px grid. Every padding, margin and gap in the interface is one of
+     these — the previous 5/6/7/9/10/13px assortment is why nothing lined up across two
+     panes that were laid out on different days. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
 
   /* Radii step in threes so nesting stays concentric: a 5px row inside a 9px card
      with 4px of padding lines up at the corner. */
@@ -170,7 +195,7 @@ body {
   background: var(--bg-shell);
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: var(--fs-base);
   /* Inter's regular reads heavier than Segoe's on a dark ground; 440 puts the
      apparent weight back where a UI wants it. */
   font-weight: 440;
@@ -224,28 +249,33 @@ button:focus-visible,
 }
 
 /* Small uppercase label used for every panel heading. */
+/* A pane's own name. Sentence case at the base size — see the note on `.repo-head`
+   for why none of these are small caps any more. */
 .eyebrow {
-  font-size: 10.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  color: var(--text);
 }
 
 /* ==========================================================================
    Shell layout
 
-   One grid, three cards. The rail, the file list and the editor each float on
-   the shell with a gutter between them, which is what gives the window depth
-   without a single divider line.
+   One grid, three panes, flush against each other and against the window, divided
+   by hairlines.
+
+   They used to float as rounded cards on an 8px gutter. That gives a window depth,
+   and it costs three things a review tool cannot spare: 16px of horizontal room per
+   division, a shadow and a radius on every pane whether or not it had anything to
+   separate it from, and — the real problem — the suggestion that the three panes are
+   peers. They are not. The rail selects a worktree, the list selects a file within it,
+   and the editor shows that file: each one narrows what the next one is about. Flush
+   panes with the rail recessed say that; three floating cards say the opposite.
    ========================================================================== */
 
 .app {
   position: relative;
   display: grid;
   grid-template-columns: var(--rail-w) var(--files-w) 1fr;
-  gap: var(--gap);
-  padding: var(--gap);
   height: 100vh;
   overflow: hidden;
 }
@@ -255,58 +285,69 @@ button:focus-visible,
   min-width: 0;
   min-height: 0;
   background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-card);
-  /* Required, not cosmetic: the editor and both scrolling lists would otherwise
-     paint over the rounded corners they sit inside. */
+  /* The editor and both scrolling lists must not paint over their neighbour's divider. */
   overflow: hidden;
 }
 
-/* Drag handles fill the gutter between two cards, so the whole visible gap is
-   grabbable rather than a hairline on the border.
+/* Recessed, because it is the one pane that is navigation rather than content. */
+.rail {
+  background: var(--bg-shell);
+}
 
-   They are children of the shell rather than of the card they resize. A handle sitting
-   just outside its own card is exactly what `overflow: hidden` above exists to clip, so
-   nesting them left both splitters invisible and unhittable — offsetting from the shell
-   is what keeps them in the gutter and on screen. */
+.rail,
+.files {
+  border-right: 1px solid var(--border);
+}
+
+/* Drag handles straddle the divider they move, extending past it either side so the
+   hairline is grabbable without being thick.
+
+   They are children of the shell rather than of the pane they resize: a handle hanging
+   over its own pane's edge is exactly what `overflow: hidden` above exists to clip, so
+   nesting them left both splitters invisible and unhittable. */
 .splitter {
   position: absolute;
-  top: var(--gap);
-  bottom: var(--gap);
-  width: var(--gap);
+  top: 0;
+  bottom: 0;
+  width: var(--grip);
+  margin-left: calc(var(--grip) / -2);
   cursor: col-resize;
   z-index: 20;
 }
 
 #split-rail {
-  left: calc(var(--gap) + var(--rail-w));
+  left: var(--rail-w);
 }
 
 #split-files {
-  left: calc(var(--gap) + var(--rail-w) + var(--gap) + var(--files-w));
+  left: calc(var(--rail-w) + var(--files-w));
 }
 
-/* A short rounded pill rather than an edge-to-edge line: it reads as a handle,
-   and it does not draw a bright rule down the full height of the window. */
+/* Thickens and brightens the existing divider rather than drawing a second line beside
+   it, so nothing moves and nothing new appears — the hairline the pointer is already
+   over simply becomes the thing being dragged. Accent only while actually dragging: a
+   hover is a question, a drag is an answer. */
 .splitter::after {
   content: '';
   position: absolute;
-  top: 50%;
+  top: 0;
+  bottom: 0;
   left: 50%;
-  width: 2px;
-  height: 28px;
-  transform: translate(-50%, -50%) scaleY(0.4);
-  border-radius: 2px;
-  background: var(--accent);
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border-strong);
   opacity: 0;
-  transition: opacity var(--fast), transform var(--medium);
+  transition: opacity var(--fast), background var(--fast);
 }
 
-.splitter:hover::after,
+.splitter:hover::after {
+  opacity: 1;
+}
+
 .splitter.dragging::after {
   opacity: 1;
-  transform: translate(-50%, -50%) scaleY(1);
+  width: 2px;
+  background: var(--accent);
 }
 
 body.resizing {
@@ -317,69 +358,60 @@ body.resizing {
    Worktree rail
    ========================================================================== */
 
+/* No brand row.
+
+   There was one — the mark and the word "Chapter" — and the window title bar two
+   pixels above it already says Chapter beside the same icon. Two wordmarks stacked is
+   not identity, it is 41px of the worktree list spent saying something the operating
+   system had said already. The rail is the list; it starts at the top. */
 .rail {
   display: grid;
-  grid-template-rows: auto 1fr auto;
-}
-
-/* Brand row. Gives the window an identity of its own, which is otherwise the
-   one thing a WebView-hosted app never has. */
-.rail-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 10px 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.brand-mark {
-  flex: none;
-  display: block;
-  width: 18px;
-  height: 18px;
-}
-
-.brand-name {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  font-weight: 620;
-  letter-spacing: -0.01em;
-  color: var(--text);
+  grid-template-rows: 1fr auto;
 }
 
 .rail-body {
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 8px;
+  padding: var(--sp-3) var(--sp-2) var(--sp-2);
 }
 
 .rail-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
   border-top: 1px solid var(--border);
-  padding: 8px;
+  padding: var(--sp-2);
+}
+
+.rail-foot .btn {
+  min-width: 0;
 }
 
 .repo-group + .repo-group {
-  margin-top: 12px;
+  margin-top: var(--sp-4);
 }
 
+/* Weight and colour, not capitals.
+
+   Every group label in the app used letterspaced small caps — BOOK, CHANGED, STAGED,
+   NOT STAGED — and a texture applied to all of them distinguishes none of them. The
+   repo name is one step smaller than the worktrees beneath it and one step heavier,
+   which reads as "these belong to that" without shouting. */
 .repo-head {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-1);
   width: 100%;
-  padding: 4px 4px 4px 2px;
-  color: var(--text-faint);
-  font-size: 10.5px;
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) 2px;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
   font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
   border-radius: var(--r-sm);
   transition: color var(--fast);
 }
 
 .repo-head:hover {
-  color: var(--text-dim);
+  color: var(--text);
 }
 
 .repo-head .chevron {
@@ -443,9 +475,9 @@ body.resizing {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   width: 100%;
-  padding: 5px 8px 5px 10px;
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
   border-radius: var(--r-sm);
   text-align: left;
   color: var(--text-dim);
@@ -493,25 +525,52 @@ body.resizing {
   opacity: 1;
 }
 
+/* Two spans, not one string.
+
+   Agent branches are named `book-agent/<run>/<task-uuid>`, and a single truncating
+   label renders three of them as three identical rows reading `book-agent/e7d74e…`:
+   the ellipsis eats precisely the part that tells them apart. Splitting at the last
+   slash lets the prefix — which every sibling shares, and which therefore identifies
+   nothing — give up its width first. */
 .wt-label {
+  display: flex;
+  align-items: baseline;
   flex: 1;
   min-width: 0;
+  font-size: var(--fs-base);
+}
+
+.wt-prefix,
+.wt-leaf {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
 }
 
+/* Shrinks eight times faster than the leaf, so it is gone before the leaf loses a
+   character. */
+.wt-prefix {
+  flex: 0 8 auto;
+  color: var(--text-faint);
+}
+
+.wt-leaf {
+  flex: 0 1 auto;
+}
+
+/* A count, not a state. It was accent-tinted, which put the interactive colour on
+   every row of the rail and left the accent bar marking the active worktree competing
+   with eight badges for the same meaning. */
 .wt-badge {
   flex: none;
   min-width: 17px;
   height: 16px;
   padding: 0 5px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--accent);
-  font-size: 10.5px;
-  font-weight: 620;
+  background: var(--bg-active);
+  color: var(--text-dim);
+  font-size: var(--fs-micro);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   display: grid;
   place-items: center;
@@ -527,7 +586,7 @@ body.resizing {
   flex: none;
   min-width: 11px;
   text-align: right;
-  font-size: 10px;
+  font-size: var(--fs-micro);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   opacity: 0;
@@ -553,7 +612,7 @@ body.resizing {
   background: var(--bg-subtle);
   box-shadow: inset 0 0 0 1px var(--border);
   color: var(--text-dim);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   transition: background var(--fast), color var(--fast), box-shadow var(--fast);
 }
 
@@ -616,7 +675,7 @@ body.resizing {
   min-width: 0;
   padding: 0 10px;
   border-radius: var(--r-sm);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--text-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -701,7 +760,7 @@ body.resizing {
   flex: 0 0 auto;
   border-right: 1px solid var(--border);
   color: var(--text-dim);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   white-space: nowrap;
   cursor: pointer;
   transition: background var(--fast), color var(--fast);
@@ -778,24 +837,74 @@ body.resizing {
   grid-template-rows: auto auto auto 1fr;
 }
 
+/* Title, count, and the three actions. */
 .files-head {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 8px 8px 12px;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-2) var(--sp-2) var(--sp-3);
 }
 
+/* Takes the slack, so it stays beside the title rather than drifting over to the
+   buttons. */
 .files-count {
-  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-sm);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
 
+/* Baseline-aligned text beside centre-aligned icons needs the buttons put back. */
+.files-head .icon-btn {
+  align-self: center;
+}
+
+/* Which slice of the work is on screen. Sits directly above the list it filters. */
+.scope-switch {
+  margin: 0 var(--sp-3) var(--sp-2);
+}
+
+/* Basis auto rather than 0, so spare width is shared out from each label's natural
+   size instead of forcing four equal columns and truncating the longest. */
+.scope-switch button {
+  flex: 1 1 auto;
+  padding: 0 var(--sp-1);
+  font-size: var(--fs-micro);
+}
+
+/* One line: what the diff is against, how many files, and the totals. Written as a
+   sentence rather than assembled from a caps label, a bare integer and a pair of
+   coloured numbers scattered across the header above. */
+.files-base {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) var(--sp-3);
+  font-size: var(--fs-micro);
+  color: var(--text-faint);
+}
+
+/* Two of the four scopes have nothing to say here that the switch has not said. The row
+   still holds the totals, so it keeps its padding rather than collapsing and moving the
+   list up and down as the scope changes. */
+.files-base.bare .files-base-what {
+  display: none;
+}
+
+.files-base-what {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .files-stat {
+  flex: none;
   margin-left: auto;
   display: flex;
-  gap: 7px;
-  font-size: 11px;
+  gap: var(--sp-2);
   font-variant-numeric: tabular-nums;
 }
 
@@ -807,32 +916,10 @@ body.resizing {
   color: var(--del);
 }
 
-/* Which slice of the work is on screen. Sits directly above the list it filters. */
-.scope-switch {
-  margin: 0 10px 8px;
-}
-
-/* Basis auto rather than 0, so spare width is shared out from each label's natural
-   size instead of forcing four equal columns and truncating the longest. */
-.scope-switch button {
-  flex: 1 1 auto;
-  padding: 0 4px;
-  font-size: 10.5px;
-}
-
-.files-base {
-  padding: 0 12px 9px;
-  font-size: 11px;
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .files-list {
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 6px 10px;
+  padding: 0 var(--sp-2) var(--sp-3);
 }
 
 .file-row {
@@ -867,7 +954,7 @@ body.resizing {
   flex: none;
   width: 11px;
   text-align: center;
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -897,7 +984,7 @@ body.resizing {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 /* Directory is context, not content — keep it quiet and let it truncate first.
@@ -909,13 +996,13 @@ body.resizing {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--fs-micro);
   color: var(--text-faint);
 }
 
 .file-delta {
   flex: none;
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
   white-space: nowrap;
@@ -977,7 +1064,7 @@ body.resizing {
   align-items: center;
   gap: 5px;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-faint);
 }
 
@@ -1037,71 +1124,203 @@ body.resizing {
    Empty, loading and error states
    ========================================================================== */
 
+/* The pane with nothing open in it.
+
+   This is the app's resting face, and it was a centred stack: the mark at 44px,
+   "Nothing open", a hint, and a ten-row two-column keyboard legend. That is onboarding
+   material, and onboarding material shown permanently stops being read and starts being
+   what the window looks like.
+
+   Two rows now. The upper one says which worktree you are standing in and what is in
+   it, left-aligned at a reading measure — content rather than decoration. The legend
+   keeps every binding it had, because it is still the only place the app documents
+   itself, but it moves to a strip along the bottom edge where a legend belongs. */
 .placeholder {
   display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 10px;
+  grid-template-rows: minmax(0, 1fr) auto;
   height: 100%;
-  padding: 32px;
-  text-align: center;
   color: var(--text-faint);
 }
 
-.placeholder svg {
-  opacity: 0.35;
-  margin-bottom: 2px;
-}
+/* Anchored to the top-left of the pane, not floated in the middle of it.
 
-/* The application mark, which keeps its own colour — the point of it is to be
-   the one saturated thing on an otherwise empty pane. */
-.placeholder .brand-mark {
-  width: 44px;
-  height: 44px;
-  opacity: 1;
-  margin-bottom: 10px;
+   Centred both ways it read as a card with no edges — a block of text hanging in space
+   with an equal void above, below and to the right of it. Against the corner it reads as
+   what the pane is currently about, which is what it is. */
+.placeholder-body {
+  align-self: start;
+  justify-self: start;
+  width: min(520px, 100%);
+  max-height: 100%;
+  padding: var(--sp-8);
+  overflow-y: auto;
 }
 
 .placeholder-title {
-  color: var(--text-dim);
-  font-size: 14px;
-  font-weight: 560;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
   letter-spacing: -0.005em;
 }
 
 .placeholder-hint {
-  font-size: 12px;
-  max-width: 380px;
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
 .placeholder .btn {
   width: auto;
-  padding: 0 16px;
-  margin-top: 6px;
+  padding: 0 var(--sp-4);
+  margin-top: var(--sp-2);
 }
 
 .placeholder-error {
+  margin-top: var(--sp-2);
   color: var(--del);
   font-family: var(--font-mono);
-  font-size: 11.5px;
-  max-width: 520px;
+  font-size: var(--fs-micro);
+  line-height: 1.6;
   word-break: break-word;
   user-select: text;
 }
 
-/* Keyboard legend on the empty editor. Two columns so the keys line up in a
-   block instead of wrapping mid-shortcut. */
+/* --- what this worktree is --- */
+
+/* Split at the last slash, the way the rail splits it and for the same reason:
+   `book-agent/<run>/` is shared by every sibling and so identifies none of them. Here
+   there is room to show it in full, so it is shown — quietly, above the part that
+   actually names this worktree. */
+.rest-prefix {
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+/* The one large thing in the interface. If a second appears, one of them is wrong. */
+.rest-branch {
+  margin-top: 2px;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.rest-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-2);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+
+.rest-meta .sha {
+  font-family: var(--font-mono);
+}
+
+.rest-sep {
+  opacity: 0.45;
+}
+
+.rest-stats {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-top: var(--sp-5);
+  font-size: var(--fs-base);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.rest-base {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+/* A merge in progress, a lock, a directory that is gone. Amber because none of them is
+   a failure — they are facts that change what the next action can be. */
+.rest-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--mod) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mod) 30%, transparent);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.rest-flag svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--mod);
+}
+
+.rest-hint {
+  margin-top: var(--sp-5);
+  font-size: var(--fs-sm);
+  color: var(--text-faint);
+}
+
+/* --- the keyboard reference --- */
+
+/* Lives in the F1 overlay now, not across the empty editor pane. Two columns with the
+   keys right-aligned against the descriptions, so the eye can run down either side —
+   which is the right shape for a reference and the wrong one for a permanent fixture,
+   which is what it was. */
+.help {
+  padding-bottom: var(--sp-1);
+}
+
+.help-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4) var(--sp-2);
+}
+
+.help-title {
+  color: var(--text);
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.help-subtitle {
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+
 .shortcuts {
   display: grid;
-  grid-template-columns: auto auto;
-  gap: 7px 16px;
+  grid-template-columns: auto 1fr;
   align-items: center;
-  margin-top: 18px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border);
-  font-size: 11.5px;
+  gap: var(--sp-2) var(--sp-4);
+  max-height: 72vh;
+  overflow-y: auto;
+  padding: var(--sp-2) var(--sp-4) var(--sp-4);
+  font-size: var(--fs-sm);
   color: var(--text-faint);
+}
+
+
+.help-hint {
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.help-hint kbd {
+  margin-right: var(--sp-1);
 }
 
 .shortcuts .keys {
@@ -1111,11 +1330,12 @@ body.resizing {
 
 .shortcuts .what {
   justify-self: start;
+  color: var(--text-dim);
 }
 
 .files-empty {
-  padding: 18px 14px;
-  font-size: 12px;
+  padding: var(--sp-5) var(--sp-4);
+  font-size: var(--fs-sm);
   color: var(--text-faint);
   text-align: center;
   line-height: 1.6;
@@ -1149,7 +1369,7 @@ kbd {
   border-bottom-width: 2px;
   background: var(--bg-subtle);
   font-family: var(--font-ui);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   font-weight: 500;
   line-height: 1.5;
   text-align: center;
@@ -1180,7 +1400,7 @@ kbd {
   max-width: 76ch;
   margin: 0 auto;
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 400;
   line-height: 1.72;
 }
@@ -1197,7 +1417,7 @@ kbd {
 .md-frontmatter pre {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text-dim);
   white-space: pre-wrap;
@@ -1387,7 +1607,7 @@ kbd {
   border: 1px dashed var(--border-strong);
   background: var(--bg-subtle);
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   font-family: var(--font-mono);
   word-break: break-all;
 }
@@ -1400,7 +1620,8 @@ kbd {
    Quick-open palette
    ========================================================================== */
 
-.palette-backdrop {
+.palette-backdrop,
+.help-backdrop {
   position: fixed;
   inset: 0;
   z-index: 60;
@@ -1412,11 +1633,23 @@ kbd {
   backdrop-filter: blur(3px);
 }
 
-.palette-backdrop.open {
+.palette-backdrop.open,
+.help-backdrop.open {
   display: flex;
 }
 
-.palette {
+/* Sits higher than the palette. The palette is one field and a few rows, so 12vh keeps it
+   near the eye; this is the full list of bindings, and starting it that far down pushed
+   its last two off the bottom of a short window.
+
+   After the shared rule, not before it: both selectors are one class, so the later of the
+   two wins outright and an override written above it silently does nothing. */
+.help-backdrop {
+  padding-top: 7vh;
+}
+
+.palette,
+.help {
   width: min(680px, 88vw);
   display: flex;
   flex-direction: column;
@@ -1446,7 +1679,7 @@ kbd {
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--fs-md);
   outline: none;
 }
 
@@ -1480,7 +1713,7 @@ kbd {
 
 .palette-primary {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-base);
   white-space: nowrap;
 }
 
@@ -1491,7 +1724,7 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   text-align: right;
 }
 
@@ -1499,14 +1732,14 @@ kbd {
   padding: 18px;
   text-align: center;
   color: var(--text-faint);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .palette-hint {
   padding: 8px 14px;
   border-top: 1px solid var(--border);
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: var(--fs-micro);
 }
 
 .palette-hint kbd {
@@ -1568,7 +1801,7 @@ kbd {
 
 .refs-title {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -1579,7 +1812,7 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-faint);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .refs-subtitle strong {
@@ -1599,7 +1832,7 @@ kbd {
   background: var(--bg-input);
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   outline: none;
 }
 
@@ -1620,7 +1853,7 @@ kbd {
   background: color-mix(in srgb, var(--mod) 12%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mod) 34%, transparent);
   color: var(--text-dim);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .refs-list {
@@ -1658,7 +1891,7 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 /* The commit subject. Lowest priority in the row — it is what tells two similarly
@@ -1668,14 +1901,14 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: var(--fs-micro);
   text-align: right;
 }
 
 .refs-sha {
   color: var(--text-faint);
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
 }
 
 /* Holds a grid column open where a row has no badge or no tracking count. Without it the
@@ -1691,7 +1924,7 @@ kbd {
   border-radius: 999px;
   background: var(--bg-active);
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   white-space: nowrap;
 }
 
@@ -1732,7 +1965,7 @@ kbd {
   display: flex;
   gap: 4px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   white-space: nowrap;
 }
 
@@ -1775,7 +2008,7 @@ kbd {
   padding: 22px;
   text-align: center;
   color: var(--text-faint);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .refs-foot {
@@ -1789,7 +2022,7 @@ kbd {
   padding: 8px 16px;
   border-top: 1px solid var(--border);
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: var(--fs-micro);
 }
 
 .refs-hint kbd {
@@ -1807,7 +2040,7 @@ kbd {
 
 .refs-prompt-label {
   color: var(--text-dim);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .refs-prompt-row {
@@ -1824,7 +2057,7 @@ kbd {
   background: var(--bg-input);
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   outline: none;
 }
 
@@ -1859,7 +2092,7 @@ kbd {
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-popover);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   color: var(--text);
   animation: toast-in 200ms var(--ease);
 }
@@ -1887,7 +2120,7 @@ kbd {
 
 .toast-detail {
   margin-top: 3px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--text-dim);
   font-family: var(--font-mono);
   word-break: break-word;
@@ -1938,13 +2171,13 @@ kbd {
 .commit-scroll {
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 6px 8px;
+  padding: 0 var(--sp-2) var(--sp-3);
   min-height: 0;
 }
 
 .commit-empty {
-  padding: 24px 16px;
-  font-size: 12px;
+  padding: var(--sp-6) var(--sp-4);
+  font-size: var(--fs-sm);
   color: var(--text-faint);
   text-align: center;
 }
@@ -1960,26 +2193,27 @@ kbd {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 6px 5px;
+  padding: var(--sp-1) var(--sp-2);
   /* Opaque: rows scroll underneath this, and a translucent header over monospace text
      is unreadable at 11px. */
   background: var(--bg-surface);
 }
 
 .group-title {
-  font-size: 10.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  color: var(--text-dim);
 }
 
+/* The staged group is the one the commit button acts on, which is worth a colour the
+   other group does not have. Green rather than the accent: it says "included", and the
+   accent in this app means "selected". */
 .commit-group.staged .group-title {
   color: var(--add);
 }
 
 .group-count {
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -1991,7 +2225,7 @@ kbd {
   gap: 4px;
   padding: 2px 6px;
   border-radius: var(--r-xs);
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   color: var(--text-faint);
   /* Revealed on hover of the group, not permanently: two always-visible bulk buttons
      compete with the per-row ones for a glance that should land on the file names. */
@@ -2010,8 +2244,8 @@ kbd {
 }
 
 .group-empty {
-  padding: 3px 8px 7px;
-  font-size: 11px;
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  font-size: var(--fs-micro);
   color: var(--text-faint);
 }
 
@@ -2093,7 +2327,7 @@ kbd {
   width: 14px;
   height: 14px;
   border-radius: var(--r-xs);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   font-weight: 700;
   color: var(--del);
   background: color-mix(in srgb, var(--del) 18%, transparent);
@@ -2104,18 +2338,40 @@ kbd {
 .commit-box {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 9px 10px 11px;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) var(--sp-3);
   border-top: 1px solid var(--border);
   background: var(--bg-subtle);
+}
+
+/* Nothing changed, nothing staged, nothing typed.
+
+   The full box is seven stacked rows — target, key prompt, message, warnings, blocked
+   notice, two checkboxes and a button — and with a clean tree every one of them is
+   about work that does not exist. It held a third of the column to say so, under a
+   full-width saturated button that could not be pressed. Collapsed, it is the one line
+   that is still true, plus the way back in: amending needs no changes at all, and
+   ticking it re-renders the box in full. */
+.commit-box.idle {
+  gap: var(--sp-2);
+  padding: var(--sp-3);
 }
 
 .commit-head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  font-size: 11px;
+  gap: var(--sp-2);
+  font-size: var(--fs-micro);
   color: var(--text-faint);
+}
+
+/* One line, always. An agent branch name is long enough to wrap this to two lines and
+   push the whole box up, which moved the commit button every time the panel repainted. */
+.commit-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .commit-target strong {
@@ -2144,7 +2400,7 @@ kbd {
   background: var(--bg-input);
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   resize: none;
   transition: border-color var(--fast);
@@ -2190,7 +2446,7 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
 }
@@ -2245,7 +2501,7 @@ kbd {
 }
 
 .choice-subject {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2253,7 +2509,7 @@ kbd {
 }
 
 .choice-body {
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2287,7 +2543,7 @@ kbd {
   background: var(--bg-input);
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .key-input:focus {
@@ -2296,14 +2552,14 @@ kbd {
 }
 
 .key-note {
-  font-size: 10.5px;
+  font-size: var(--fs-micro);
   line-height: 1.5;
   color: var(--text-faint);
 }
 
 .key-note code {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   color: var(--text-dim);
 }
 
@@ -2314,7 +2570,7 @@ kbd {
   margin: 0;
   padding: 0;
   list-style: none;
-  font-size: 11px;
+  font-size: var(--fs-micro);
   line-height: 1.45;
 }
 
@@ -2328,7 +2584,7 @@ kbd {
 }
 
 .commit-note {
-  font-size: 11px;
+  font-size: var(--fs-micro);
   line-height: 1.45;
   color: var(--rename);
 }
@@ -2349,7 +2605,7 @@ kbd {
 .commit-blocked {
   padding: 6px 8px;
   border-radius: var(--r-sm);
-  font-size: 11px;
+  font-size: var(--fs-micro);
   line-height: 1.45;
   color: var(--text-dim);
   background: var(--bg-input);
@@ -2359,7 +2615,7 @@ kbd {
 .commit-options {
   display: flex;
   gap: 14px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--text-dim);
 }
 
@@ -2406,7 +2662,7 @@ kbd {
   width: auto;
   height: var(--control-h);
   padding: 0 9px;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
 }
 
 .commit-submit {
@@ -2472,7 +2728,7 @@ kbd {
   border: 1px solid color-mix(in srgb, var(--mod) 45%, transparent);
   background: var(--bg-raised);
   box-shadow: var(--shadow-popover);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.45;
   color: var(--text-dim);
 }
@@ -2531,13 +2787,13 @@ kbd {
 }
 
 .confirm-title {
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text);
 }
 
 .confirm-body {
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.55;
   color: var(--text-dim);
 }
@@ -2550,7 +2806,7 @@ kbd {
   border: 1px solid var(--border);
   list-style: none;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-micro);
   line-height: 1.7;
   color: var(--text-dim);
   max-height: 168px;
@@ -2563,7 +2819,7 @@ kbd {
 }
 
 .confirm-recovery {
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 
@@ -2613,7 +2869,7 @@ kbd {
   padding: 0 10px 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-subtle);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--text-dim);
 }
 
@@ -2670,7 +2926,7 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-micro);
   color: var(--text-faint);
 }
 

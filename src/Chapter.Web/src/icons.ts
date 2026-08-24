@@ -89,36 +89,14 @@ export const icons = {
   /** Move: an arrow leaving one place for another. */
   move: svg('<path d="M2.5 8h9"/><path d="M8.5 5 11.5 8l-3 3"/><path d="M13.5 3v10"/>', 13),
 
+  /** Question mark in a ring — the keyboard reference. */
+  help: svg('<circle cx="8" cy="8" r="6.25"/>' +
+    '<path d="M6.3 6.2a1.75 1.75 0 1 1 2.1 2.2c-.3.1-.4.4-.4.7v.4"/><path d="M8 12.1h.01"/>', 14),
+
   /** Tag: a label with its eyelet, which is what a tag is. */
   tag: svg('<path d="M7.2 1.9H2.6a.7.7 0 0 0-.7.7v4.6a1 1 0 0 0 .3.7l6.2 6.2a1 1 0 0 0 1.4 0l4.3-4.3' +
     'a1 1 0 0 0 0-1.4L7.9 2.2a1 1 0 0 0-.7-.3Z"/><circle cx="5" cy="5" r="1"/>', 13),
 }
-
-/**
- * The application mark, as vector rather than the raster in `assets/`.
- *
- * Drawn rather than linked so it stays crisp at both sizes it is used at, and so
- * the empty state does not have to sit a dark-backed app icon on a light theme.
- * The gradient is sampled from the real mark: cyan through azure to violet.
- *
- * Gradient units are left at the default (object bounding box) so the same markup
- * renders identically at 18px in the rail and 44px on the empty state.
- */
-export const brandMark = (size = 18): string => `
-  <svg class="brand-mark" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"
-       aria-hidden="true">
-    <linearGradient id="chapter-mark" x1="0.1" y1="0" x2="0.85" y2="1">
-      <stop offset="0" stop-color="#00b6fb" />
-      <stop offset="0.46" stop-color="#0072fb" />
-      <stop offset="1" stop-color="#7129fb" />
-    </linearGradient>
-    <path d="M15.4 4.6h1.9A2.7 2.7 0 0 1 20 7.3v9.4a2.7 2.7 0 0 1-2.7 2.7h-1.9"
-          stroke="url(#chapter-mark)" stroke-width="2.4" stroke-linecap="round"
-          opacity="0.4" />
-    <path d="M16 5.2h-5.7A5.1 5.1 0 0 0 5.2 10.3v3.4a5.1 5.1 0 0 0 5.1 5.1H16"
-          stroke="url(#chapter-mark)" stroke-width="3.2" stroke-linecap="round"
-          stroke-linejoin="round" />
-  </svg>`
 
 /** Single-letter status marker shown beside each changed file. */
 export function kindLetter(kind: string): string {
