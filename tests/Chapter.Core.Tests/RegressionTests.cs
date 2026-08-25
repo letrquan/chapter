@@ -279,9 +279,11 @@ public class RegressionTests
 
         try
         {
+            var workspace = new WorkspaceService(Git);
+
             foreach (var escape in new[] { "../../../../Windows/win.ini", @"C:\Windows\win.ini" })
             {
-                var refused = await WorkspaceService.GetAssetAsync(root, escape);
+                var refused = await workspace.GetAssetAsync(root, escape);
                 Assert.Null(refused.DataUri);
                 Assert.Equal("outside the worktree", refused.Reason);
             }
@@ -310,17 +312,55 @@ public class RegressionTests
             await File.WriteAllBytesAsync(Path.Combine(root, "docs", "diagram.png"), png);
             await File.WriteAllTextAsync(Path.Combine(root, "docs", "notes.txt"), "not an image");
 
-            var inlined = await WorkspaceService.GetAssetAsync(root, "docs/diagram.png");
+            var workspace = new WorkspaceService(Git);
+
+            var inlined = await workspace.GetAssetAsync(root, "docs/diagram.png");
             Assert.NotNull(inlined.DataUri);
             Assert.StartsWith("data:image/png;base64,", inlined.DataUri);
 
             // Every refusal carries a reason, so the preview can say why rather than
             // rendering a broken-image glyph.
-            var missing = await WorkspaceService.GetAssetAsync(root, "docs/absent.png");
+            var missing = await workspace.GetAssetAsync(root, "docs/absent.png");
             Assert.Equal("not found", missing.Reason);
 
-            var wrongType = await WorkspaceService.GetAssetAsync(root, "docs/notes.txt");
+            var wrongType = await workspace.GetAssetAsync(root, "docs/notes.txt");
             Assert.Equal("unsupported image type", wrongType.Reason);
+        }
+        finally
+        {
+            Delete(root);
+        }
+    }
+
+    [Fact]
+    public async Task Opened_images_follow_the_scope_not_the_working_tree()
+    {
+        var root = await NewRepoAsync(withCommit: true);
+
+        try
+        {
+            // The committed version of the image differs from the working tree's. A
+            // Committed view that served the working copy would review a picture the
+            // commit never contained.
+            byte[] committed = [0x01, 0x02, 0x03];
+            byte[] edited = [0x04, 0x05, 0x06, 0x07];
+
+            var imagePath = Path.Combine(root, "logo.png");
+            await File.WriteAllBytesAsync(imagePath, committed);
+            await Git.RunAsync(root, default, "add", "-A");
+            await Git.RunAsync(root, default, "commit", "-m", "add image");
+            await File.WriteAllBytesAsync(imagePath, edited);
+
+            var workspace = new WorkspaceService(Git);
+
+            var uncommitted = await workspace.GetAssetAsync(root, "logo.png", DiffScope.Uncommitted);
+            Assert.NotNull(uncommitted.DataUri);
+            Assert.EndsWith(Convert.ToBase64String(edited), uncommitted.DataUri);
+
+            var atCommit = await workspace.GetAssetAsync(root, "logo.png", DiffScope.Committed);
+            Assert.NotNull(atCommit.DataUri);
+            Assert.EndsWith(Convert.ToBase64String(committed), atCommit.DataUri);
+            Assert.DoesNotContain(Convert.ToBase64String(edited), atCommit.DataUri);
         }
         finally
         {

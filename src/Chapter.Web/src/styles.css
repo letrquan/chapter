@@ -737,6 +737,12 @@ body.resizing {
   display: none;
 }
 
+/* The whole control goes away for images, which have no diff or code to switch to.
+   Same author-rule problem, same restatement. */
+.segmented[hidden] {
+  display: none;
+}
+
 .segmented button:hover {
   color: var(--text);
 }
@@ -1442,6 +1448,39 @@ kbd {
 
 .markdown-preview[hidden] {
   display: none;
+}
+
+/* ==========================================================================
+   Image view
+   ========================================================================== */
+
+/* One picture owns the pane, centred. The checkerboard is what every image editor
+   uses, so transparency reads as transparency rather than as the theme's surface —
+   an icon on a dark background would otherwise be invisible against it. */
+.image-view {
+  position: absolute;
+  inset: 0;
+  z-index: 4; /* over the Monaco hosts, under the empty-state overlay */
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: auto;
+  user-select: none;
+}
+
+.image-view[hidden] {
+  display: none;
+}
+
+.image-view img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  background:
+    conic-gradient(var(--bg-subtle) 25%, transparent 0 50%, var(--bg-subtle) 0 75%, transparent 0)
+      0 0 / 16px 16px,
+    var(--bg-surface);
 }
 
 /* A measure, not a full-bleed column — long prose is unreadable edge to edge. */

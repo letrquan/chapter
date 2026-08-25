@@ -337,6 +337,22 @@ public sealed class DiffService(GitCli git)
         return result.Success ? FileContent.FromBytes(result.StandardOutput) : FileContent.Empty;
     }
 
+    /// <summary>
+    /// Raw file bytes as they exist at a revision, or null when it did not exist there.
+    ///
+    /// For content that must not pass through a text decode at all — images, whose bytes
+    /// are the whole point. <see cref="GetContentAtAsync"/> would classify them as binary
+    /// and hand back an empty string.
+    /// </summary>
+    public async Task<byte[]?> GetBytesAtAsync(
+        string worktreePath, string revision, string repoRelativePath, CancellationToken ct = default)
+    {
+        var result = await git.RunBytesAsync(worktreePath, ct, "show", $"{revision}:{repoRelativePath}")
+            .ConfigureAwait(false);
+
+        return result.Success ? result.StandardOutput : null;
+    }
+
     /// <summary>File content as it exists at the comparison base.</summary>
     public Task<FileContent> GetBaseContentAsync(
         string worktreePath, string baseSha, string repoRelativePath, CancellationToken ct = default) =>
