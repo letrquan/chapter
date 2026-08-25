@@ -616,13 +616,17 @@ public sealed class WorkspaceService
     private const long MaxInlineBytes = 4 * 1024 * 1024;
 
     /// <summary>
-    /// Reads an image referenced by a Markdown file and returns it as a data URI.
+    /// Reads an image for display and returns it as a data URI.
     ///
     /// Every failure is reported rather than thrown: a preview with one missing image
     /// should still render, showing a placeholder where that image belongs.
+    ///
+    /// Scope-aware like <see cref="GetFileContentAsync"/>: a Committed or Last view must
+    /// show the image as that comparison ends, not whatever the working tree holds now —
+    /// an edited picture would otherwise leak into a review of the work before it.
     /// </summary>
-    public static async Task<AssetPayload> GetAssetAsync(
-        string worktreePath, string repoRelativePath, CancellationToken ct = default)
+    public async Task<AssetPayload> GetAssetAsync(
+        string worktreePath, string repoRelativePath, DiffScope scope = DiffScope.Branch, CancellationToken ct = default)
     {
         string absolute;
         try
@@ -637,30 +641,69 @@ public sealed class WorkspaceService
             return new AssetPayload { Path = repoRelativePath, Reason = "outside the worktree" };
         }
 
-        var extension = Path.GetExtension(absolute);
-        if (!InlineableImages.TryGetValue(extension, out var mediaType))
+        if (!InlineableImages.TryGetValue(Path.GetExtension(absolute), out var mediaType))
             return new AssetPayload { Path = repoRelativePath, Reason = "unsupported image type" };
 
-        var info = new FileInfo(absolute);
-        if (!info.Exists)
-            return new AssetPayload { Path = repoRelativePath, Reason = "not found" };
-
-        if (info.Length > MaxInlineBytes)
-            return new AssetPayload { Path = repoRelativePath, Reason = "too large to preview" };
-
+        byte[]? bytes;
         try
         {
-            var bytes = await File.ReadAllBytesAsync(absolute, ct).ConfigureAwait(false);
-            return new AssetPayload
+            if (scope is DiffScope.Branch or DiffScope.Uncommitted)
             {
-                Path = repoRelativePath,
-                DataUri = $"data:{mediaType};base64,{Convert.ToBase64String(bytes)}",
-            };
+                // Both end at the working tree, so the image can be read straight from
+                // disk. Resolving a base first would cost several git processes per call,
+                // and this runs once per image opened.
+                var info = new FileInfo(absolute);
+                if (!info.Exists)
+                    return new AssetPayload { Path = repoRelativePath, Reason = "not found" };
+
+                if (info.Length > MaxInlineBytes)
+                    return new AssetPayload { Path = repoRelativePath, Reason = "too large to preview" };
+
+                bytes = await File.ReadAllBytesAsync(absolute, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                bytes = await BytesAtScopeEndAsync(worktreePath, repoRelativePath, scope, ct).ConfigureAwait(false);
+                if (bytes is null)
+                    return new AssetPayload { Path = repoRelativePath, Reason = "not found" };
+
+                if (bytes.LongLength > MaxInlineBytes)
+                    return new AssetPayload { Path = repoRelativePath, Reason = "too large to preview" };
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return new AssetPayload { Path = repoRelativePath, Reason = "could not be read" };
         }
+
+        return new AssetPayload
+        {
+            Path = repoRelativePath,
+            DataUri = $"data:{mediaType};base64,{Convert.ToBase64String(bytes)}",
+        };
+    }
+
+    /// <summary>
+    /// Raw bytes of a file wherever the scope's comparison ends — the working tree when
+    /// the resolver says the comparison has no committed side, otherwise that revision.
+    /// Null when the path did not exist there, the normal case for an added file viewed
+    /// as Committed.
+    /// </summary>
+    private async Task<byte[]?> BytesAtScopeEndAsync(
+        string worktreePath, string repoRelativePath, DiffScope scope, CancellationToken ct)
+    {
+        var diffBase = await _bases.ResolveBaseAsync(worktreePath, scope, ct).ConfigureAwait(false);
+
+        return diffBase.ToRef is null
+            ? await ReadWorkingBytesAsync(RepoPaths.Resolve(worktreePath, repoRelativePath), ct).ConfigureAwait(false)
+            : await _diff.GetBytesAtAsync(worktreePath, diffBase.ToRef, repoRelativePath, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<byte[]?> ReadWorkingBytesAsync(string absolute, CancellationToken ct)
+    {
+        if (!File.Exists(absolute)) return null;
+
+        return await File.ReadAllBytesAsync(absolute, ct).ConfigureAwait(false);
     }
 
     private async Task<FileContent> ContentAtScopeEndAsync(

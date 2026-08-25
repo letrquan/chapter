@@ -1002,8 +1002,8 @@ public sealed class BridgeDispatcher
     private async Task<object> GetFileContentAsync(FileRequest req, CancellationToken ct) =>
         await Workspace.GetFileContentAsync(req.WorktreePath, req.Path, req.Scope, ct).ConfigureAwait(false);
 
-    private static async Task<object> GetAssetAsync(FileRequest req, CancellationToken ct) =>
-        await WorkspaceService.GetAssetAsync(req.WorktreePath, req.Path, ct).ConfigureAwait(false);
+    private async Task<object> GetAssetAsync(FileRequest req, CancellationToken ct) =>
+        await Workspace.GetAssetAsync(req.WorktreePath, req.Path, req.Scope, ct).ConfigureAwait(false);
 
     /// <summary>
     /// Resolves a path to the worktree git reports for it, so branch name and prunable

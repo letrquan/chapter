@@ -58,10 +58,19 @@ import type {
    point of the app: switching worktrees must not disturb what you had open.
    ========================================================================== */
 
-type Mode = 'diff' | 'code' | 'preview'
+type Mode = 'diff' | 'code' | 'preview' | 'image'
 
 /** Preview only applies where there is something to render. */
 const isPreviewable = (path: string): boolean => /\.(md|markdown|mdx)$/i.test(path)
+
+/**
+ * Images Chapter renders itself, rather than reporting as binary.
+ *
+ * Mirrors the backend's InlineableImages list — anything matched here must be inlined
+ * there too, or opening the file would promise a picture and deliver a refusal.
+ */
+const isImage = (path: string): boolean =>
+  /\.(png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i.test(path)
 
 interface TabState {
   path: string
@@ -260,6 +269,7 @@ function renderShell(): void {
         <div class="hunk-bar" id="hunk-bar" hidden></div>
         <div class="editor-host" id="editor-host">
           <div class="markdown-preview" id="preview-host" hidden></div>
+          <div class="image-view" id="image-host" hidden></div>
           <!-- Filled by showEmptyState once there is a worktree to describe; the shell is
                built before anything has been read. -->
           <div class="placeholder" id="editor-empty">${restingState()}</div>
@@ -634,6 +644,11 @@ function renderModeSwitch(): void {
   const tab = entry?.tabs.find((t) => t.path === entry.activePath)
   const mode = tab?.mode ?? 'diff'
 
+  // An image has nothing to switch between: git offers no text diff and the code view
+  // cannot decode it. Hiding the control beats presenting buttons that can only refuse.
+  const segmented = document.getElementById('mode-switch')
+  if (segmented) segmented.hidden = tab !== undefined && isImage(tab.path)
+
   for (const button of document.querySelectorAll<HTMLElement>('#mode-switch button')) {
     button.classList.toggle('on', button.dataset.mode === mode)
   }
@@ -961,7 +976,9 @@ async function openFile(path: string, mode?: Mode, side: DiffSide = 'combined'):
 
   let tab = entry.tabs.find((t) => t.path === path)
   if (!tab) {
-    tab = { path, mode: mode ?? 'diff', side }
+    // Reviewing starts in the diff; an image has no text diff to show and would land on
+    // a refusal instead of its picture, so it opens as what it is.
+    tab = { path, mode: mode ?? (isImage(path) ? 'image' : 'diff'), side }
     entry.tabs.push(tab)
   } else {
     if (mode) tab.mode = mode
@@ -997,6 +1014,7 @@ async function loadTabContent(worktreePath: string, tab: TabState): Promise<void
       if (!current()) return
 
       showPreview(true)
+      showImage(false)
       showEmptyState(false)
       showMode('preview')
 
@@ -1009,7 +1027,36 @@ async function loadTabContent(worktreePath: string, tab: TabState): Promise<void
       return
     }
 
+    if (tab.mode === 'image') {
+      const asset = await call('getAsset', { worktreePath, path: tab.path, scope: state.scope })
+      if (!current()) return
+
+      // The asset is inlined as a data URI by the backend: the page cannot touch disk,
+      // and a committed-scope review must see the picture as that revision has it.
+      const host = document.getElementById('image-host')!
+
+      if (!asset.dataUri) {
+        host.hidden = true
+        showNotice('Cannot show image', `${tab.path} — ${asset.reason ?? 'could not be read'}.`)
+        return
+      }
+
+      showPreview(false)
+      host.innerHTML = `<img src="${esc(asset.dataUri)}" alt="${esc(tab.path)}" draggable="false">`
+      host.hidden = false
+
+      showEmptyState(false)
+      showMode(tab.mode)
+      clearStaleBanner()
+
+      // The hunk bar belongs to a split diff of the *previous* tab; this file has no
+      // hunks, and leaving the bar up would stage against a file no longer on screen.
+      void syncHunkBar()
+      return
+    }
+
     showPreview(false)
+    showImage(false)
 
     let fresh = true
 
@@ -1257,6 +1304,7 @@ function showEmptyState(visible: boolean): void {
   if (visible) {
     empty.innerHTML = restingState()
     showPreview(false)
+    showImage(false)
   }
   empty.style.display = visible ? 'grid' : 'none'
 }
@@ -1288,6 +1336,15 @@ function showPreview(visible: boolean): void {
     cancelPreview()
     host.innerHTML = ''
   }
+}
+
+/** The image view is rebuilt on every load, so hiding it also discards the last picture. */
+function showImage(visible: boolean): void {
+  const host = document.getElementById('image-host')
+  if (!host) return
+
+  host.hidden = !visible
+  if (!visible) host.innerHTML = ''
 }
 
 /**
@@ -1925,6 +1982,10 @@ function wireSplitter(id: string, variable: string, min: number, max: number): v
 function toggleMode(): void {
   const entry = state.active ? worktreeState(state.active) : null
   const tab = entry?.tabs.find((t) => t.path === entry.activePath)
+
+  // An image has no diff or code view to flip to.
+  if (!tab || isImage(tab.path)) return
+
   void setMode(tab?.mode === 'diff' ? 'code' : 'diff')
 }
 
@@ -2112,9 +2173,10 @@ async function navigateTo(
   const existing = entry.tabs.find((t) => t.path === path)
 
   // Navigating to a file is about reading it, not reviewing a change — so land in code
-  // view, or the rendered document for Markdown. Opening the same file from the changed
-  // list still starts in diff, which is the right default when reviewing.
-  const fresh: Mode = isPreviewable(path) ? 'preview' : 'code'
+  // view, the rendered document for Markdown, or the picture itself for an image.
+  // Opening the same file from the changed list still starts in diff, which is the right
+  // default when reviewing.
+  const fresh: Mode = isImage(path) ? 'image' : isPreviewable(path) ? 'preview' : 'code'
   await openFile(path, existing?.mode ?? fresh)
 
   const tab = entry.tabs.find((t) => t.path === path)
@@ -2155,7 +2217,8 @@ async function start(): Promise<void> {
 
   initCommitPanel(document.getElementById('commit-panel')!, {
     activeWorktree: () => state.active,
-    openFile: (path, side) => void openFile(path, 'diff', side),
+    // The commit view is about one comparison, but an image still has no diff to sit on.
+    openFile: (path, side) => void openFile(path, isImage(path) ? 'image' : 'diff', side),
     onMutated: () => void afterMutation(),
     toast,
   })

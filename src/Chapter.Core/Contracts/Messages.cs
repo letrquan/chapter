@@ -726,7 +726,8 @@ public sealed record UndoPayload
 }
 
 /// <summary>
-/// An image referenced by a Markdown document, inlined for the preview.
+/// An image the front-end asked for — referenced by a Markdown document, or opened as a
+/// file in its own right.
 ///
 /// The page is served from a virtual host with a strict CSP, so it cannot read files off
 /// disk — the backend has to hand the bytes over. <see cref="DataUri"/> is null when the
