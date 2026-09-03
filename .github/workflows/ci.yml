@@ -1,0 +1,70 @@
+# Builds and tests every pull request, and main.
+#
+# Windows-only, because the app is: Chapter.App targets net10.0-windows and hosts WebView2,
+# so there is no runner that could build it anywhere else. The test project follows it, which
+# means the whole suite runs here rather than a portable subset.
+#
+# The front-end is built before .NET on purpose. `dotnet build` copies whatever is in
+# src/Chapter.Web/dist into the app output and only warns (CHAPTER001) when there is nothing
+# there — so a job that skipped npm would go green having packaged an empty window.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancels a superseded run rather than letting two builds of the same branch race for the
+# same answer. The in-progress run of a branch someone has just pushed to again is testing
+# code nobody is waiting on.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: src/Chapter.Web/package-lock.json
+
+      - name: Install front-end dependencies
+        working-directory: src/Chapter.Web
+        run: npm ci
+
+      # Typecheck separately from the bundle: esbuild strips types without checking them, so
+      # a build alone is green on code that does not compile.
+      - name: Typecheck the front-end
+        working-directory: src/Chapter.Web
+        run: npm run typecheck
+
+      - name: Build the front-end
+        working-directory: src/Chapter.Web
+        run: npm run build
+
+      # Warnings are errors here and nowhere else. CHAPTER001 — an app packaged with no
+      # front-end — is exactly the kind of thing that is easy to miss in a local log and
+      # impossible to miss in a red run.
+      - name: Build
+        run: dotnet build chapter.slnx --nologo -warnaserror
+
+      # Tests that need a specific local repository skip themselves when it is absent, so the
+      # suite is green on a runner that has never seen one. That is deliberate: they exist to
+      # check this app against real, messy repositories, and a fixture-shaped copy of one
+      # would answer a different question.
+      - name: Test
+        run: dotnet test chapter.slnx --nologo
