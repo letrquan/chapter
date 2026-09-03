@@ -33,9 +33,10 @@ it something to act on.
       → `GitIntent.Read | Write | Network`; every call declares one.
 - [x] **[BLOCKER][TRAP]** `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`
       (`GitCli.cs:60-62`) mean any command needing credentials fails silently rather than
-      prompting. Fine for `status`; fatal for `push`. See Phase 5.
+      prompting. Fine for `status`; fatal for `push`.
       → The seam exists: `GitCli.AllowCredentialPrompts` governs `GCM_INTERACTIVE` for
-      network intent alone. Still false, because nothing pushes yet — Phase 5 flips it.
+      network intent alone. It is enabled by default now; terminal prompts remain disabled,
+      so Git Credential Manager can open its own UI without a headless git process blocking.
 - [x] **[BLOCKER]** `index.lock` contention. An agent running `git add` while you commit
       produces `Unable to create index.lock: File exists`. Detect it, retry with backoff,
       and tell the user *which process* holds it rather than surfacing raw git stderr.
@@ -282,9 +283,9 @@ and the rest speak. Everything below is unchanged for both, except where noted:
 
 ## Phase 3 — Branches, stash, refs
 
-**Complete**, except for pushing a tag, which is Phase 5's problem rather than this one's:
-a tag reaches a remote through `git push`, and `AllowCredentialPrompts` is still false, so
-it would fail opaquely rather than asking. It is listed there now.
+**Complete**, including pushing a tag, which is implemented with the remote operations in
+Phase 5. The local ref work and the network path remain separate: creating a tag never
+contacts a server, while pushing one uses the credential-aware network intent.
 
 Two facts about git shaped this more than the commands did, and both were settled by
 running git rather than from memory:
@@ -334,59 +335,122 @@ running git rather than from memory:
       the two kinds — git's rule (`-m` implies `-a`), not an invention. Delete restores the
       ref's own object rather than the commit behind it: recreating an annotated tag from its
       commit would silently produce a lightweight one and lose the message.
-- [ ] ~~Tags: push~~ → moved to Phase 5, with the rest of the credential story.
+- [x] Tags: push → implemented in Phase 5 alongside the credential-aware network path.
 
 ## Phase 4 — History
 
-- [ ] Commit log per worktree, paginated. `git log --format` with a stable field separator.
-- [ ] **[HARD]** Graph rendering for branch topology — genuinely fiddly to lay out well
-- [ ] Commit detail view — reuses the existing diff view, base = commit's parent
-- [ ] File history and blame. Blame maps naturally onto a Monaco gutter decoration.
-- [ ] Search history: message, author, path, content (`git log -S`)
-- [ ] Cherry-pick and revert *(both can conflict → Phase 6)*
-- [ ] **[HARD]** Interactive rebase. This is a project in itself — sequencing, editing,
-      conflict handling, abort/continue. Consider deferring past 1.0.
+**Complete.** The log, graph, commit detail, file history, blame, history mutations and
+interactive rebase surface are complete:
+every worktree has a newest-first, paginated log with merge parents, author/committer
+metadata, decorations and the full message, and an open file can follow its history or show
+line attribution. Cherry-pick and revert validate the selected full commit id against the
+current worktree, support an explicit merge parent, preserve conflicts for later resolution,
+and record an undo point only when `HEAD` actually moves. The rebase planner validates the
+captured tip, edits the todo order/action/message, and leaves a paused operation available
+to the shared conflict banner.
+
+- [x] Commit log per worktree, paginated. `git log --format` with a stable field separator.
+- [x] **[HARD]** Graph rendering for branch topology — lane-aware SVG edges keep merge
+      parents visible across paginated pages.
+- [x] Commit detail view — selecting a commit loads its parent comparison and opens a
+      historical file diff in the existing Monaco view; merge commits can choose a parent.
+- [x] File history and blame. File history follows renames from the editor toolbar and keeps
+      pagination anchored to the displayed `HEAD`; Code mode can show Monaco gutter
+      attribution for saved working-tree files, with new lines marked uncommitted. Dirty
+      buffers deliberately disable blame until they are saved, because Git can only
+      attribute bytes on disk.
+- [x] Search history: message, author, path, content (`git log -S`). The history overlay
+      keeps one search field with explicit modes: messages and authors are literal,
+      case-insensitive matches; paths are escaped literal substrings; content uses Git's
+      exact pickaxe semantics. Every result page stays anchored to the displayed `HEAD`.
+- [x] Cherry-pick and revert. The history detail actions and contextual `C` / `R` shortcuts
+      run through the guarded writer with `--no-edit`; merge parents translate from the
+      zero-based UI index to Git's one-based `-m`. A source commit must be a full object id
+      reachable from the displayed worktree's `HEAD`. Clean operations are undoable; a
+      conflict is classified and left in Git's cherry-pick/revert state for Phase 6's
+      resolve / continue / abort controls.
+- [x] **[HARD]** Interactive rebase. The history planner edits order and pick/reword/edit/
+      squash/fixup/drop actions, supplies replacement messages, and starts a guarded Git
+      sequence. The persistent operation banner handles continue, skip and abort, including
+      a rebase resumed after an application restart.
 
 ## Phase 5 — Remotes
 
 The credential story is the hard part, not the commands.
 
-- [ ] **[BLOCKER][TRAP]** Undo the no-prompt environment from Phase 0 for network
-      operations, and integrate with Git Credential Manager. Right now `GCM_INTERACTIVE=never`
-      guarantees an auth prompt can never appear — `push` will fail with an opaque error
-      rather than asking for credentials.
-- [ ] Fetch / pull / push with progress. These are long-running; the existing 60s bridge
-      timeout will cut them off.
-- [ ] Pull strategy: merge vs rebase vs fast-forward-only
-- [ ] `--force-with-lease` — never plain `--force`
-- [ ] Ahead/behind indicators in the worktree rail
-      *(Phase 3 reads the counts already — `%(upstream:track)` in the branch list — so this
-      is a matter of surfacing them on the rail, not of computing them. They are as old as
-      the last fetch until this phase gives the app a way to fetch.)*
-- [ ] **Push a tag.** Moved from Phase 3, which built everything about tags except this:
-      it is a network operation and blocked on the same credential work as the rest.
-- [ ] Remote management: add, rename, remove, prune
-- [ ] PR integration via `gh` CLI (create, view, checkout) — optional, high value given the
+- **Complete.** Remote commands now run through a credential-aware network intent and the
+  bridge's detached progress protocol. The operation id is returned before git starts, live
+  stderr progress is forwarded as events, and cancellation kills the git process tree. Pull
+  requests arrived last and are the one thing here that is not git: they are `gh`, kept at
+  arm's length behind the same failure classification as everything else.
+
+- [x] **[BLOCKER][TRAP]** Undo the no-prompt environment from Phase 0 for network
+      operations, and integrate with Git Credential Manager. `GIT_TERMINAL_PROMPT=0` still
+      prevents a headless terminal prompt, while an unset `GCM_INTERACTIVE` lets Git
+      Credential Manager open its own sign-in UI. The switch remains configurable for hosts
+      that must be completely non-interactive, and embedded URL credentials are redacted from
+      commands, progress, messages and the operation log.
+- [x] Fetch / pull / push with progress. These are detached from the bridge request, so the
+      60s call timeout no longer cuts off a transfer.
+- [x] Pull strategy: merge vs rebase vs fast-forward-only. Merge passes `--no-rebase --no-edit`
+      so a merge commit never waits for an editor that the desktop shell does not provide.
+- [x] `--force-with-lease` — never plain `--force`
+- [x] Ahead/behind indicators in the worktree rail
+      *(The counts are joined onto each worktree from `%(upstream:track)` and refreshed after
+      a fetch, pull or push. They remain a local view of the last fetched tracking refs.)*
+- [x] **Push a tag.** The tag action uses the same detached, credential-aware push path and
+      sends only the selected `refs/tags/<name>` ref.
+- [x] Remote management: add, rename, remove, prune
+      *(The refs overlay lists fetch/push URLs, redacts embedded credentials, and exposes the
+      four local configuration actions.)*
+- [x] PR integration via `gh` CLI (create, view, checkout) — optional, high value given the
       agent workflow
+      → A fifth refs section, and the one place the app shells out to something other than
+      git. `gh` owns authentication, host selection and enterprise GitHub; Chapter supplies
+      non-interactive arguments (`GH_PROMPT_DISABLED`, `GH_PAGER=cat`, `GH_FORCE_TTY=0`) and
+      parses only the bounded `--json` field list it asked for. Reads go straight to the CLI;
+      **checkout goes through `GitWriter`**, because it moves the local worktree and has to
+      take the same repository lease and operation guard as any other mutation. It records no
+      undo point: what it changes is which branch is checked out, and the branch it came from
+      is still a branch.
+      → `gh` not being installed is an ordinary outcome rather than a crash: for the actions
+      that mutate, its stderr is classified into the same `GitFailure` set as git's, so "not
+      logged in" reads as `AuthenticationRequired` and a missing executable as `NotFound`. A
+      failed *list* is softer — it carries `gh`'s own sentence into the section rather than a
+      classified kind, because there the only thing the app can usefully do is repeat what
+      the CLI said instead of showing an empty list. Creation re-reads the PR afterwards, because some
+      `gh` versions print a success sentence rather than a URL and the panel needs the object.
+      Displayed URLs are pattern-checked before they reach an `href`.
 
 ## Phase 6 — Conflict resolution
 
-**[HARD]** The hardest UI in the whole roadmap. Budget accordingly.
+**Complete.** The conflict surface is shared by merge, rebase, cherry-pick, revert, mailbox
+apply and stash restore, while preserving each operation's different continue/skip/abort
+semantics.
 
 - [x] Detect conflicted state and list conflicted paths (`git status --porcelain=v2`
       unmerged entries, `u` records — currently skipped by `ParseWorkingState`)
       → Done in Phase 0, because the write guard needs it: `ParseWorkingState` now reads
       `u` records, `ChangedFile.IsConflicted` carries it, and `RepositoryState` lists the
-      paths. Everything else in this phase is untouched.
-- [ ] **[HARD]** Three-way merge view. Monaco ships a two-way diff editor, not a merge
-      editor — ours / base / theirs needs building from multiple editor instances, or
-      adopting VS Code's merge-editor approach.
-- [ ] Per-conflict actions: take ours, take theirs, take both, edit manually
-- [ ] Conflict markers as first-class regions rather than raw `<<<<<<<` text
-- [ ] Mark resolved (`git add`), then continue / skip / abort the merge or rebase
-- [ ] Conflict resolution during rebase, cherry-pick, revert, and stash-apply — each has
-      different continue/abort semantics
-- [ ] `git rerere` support, if you hit the same conflicts repeatedly across worktrees
+      paths. The rest of this phase now reads the same unmerged index directly, so a partial
+      status probe cannot hide a stage.
+- [x] **[HARD]** Three-way merge view. A custom four-pane Monaco surface shows Base, Ours,
+      Theirs and an editable Result; it uses responsive 2x2 desktop layout and stacks panes
+      at a narrow window width rather than letting absolute Monaco hosts collapse.
+- [x] Per-conflict actions: take ours, take theirs, take both, edit manually. Side choices
+      preserve the working file's encoding/newline format where possible; binary sides are
+      copied byte-for-byte, and modify/delete conflicts expose an explicit delete choice.
+- [x] Conflict markers as first-class regions rather than raw `<<<<<<<` text. Regions are
+      parsed with optional diff3 base content, highlighted in the result, and carry local
+      Ours/Theirs/Both controls; literal marker text outside a parsed region remains content.
+- [x] Mark resolved (`git add`), then continue / skip / abort the merge or rebase. The shared
+      banner keeps a paused operation visible after files are staged and refuses continuation
+      while any unmerged index stage remains.
+- [x] Conflict resolution during rebase, cherry-pick, revert, and stash-apply — each has
+      operation-specific continue/skip/abort behavior. Stash apply/pop conflicts retain the
+      stash and offer an explicit Continue, with no unsafe fake Abort.
+- [x] `git rerere` support, if you hit the same conflicts repeatedly across worktrees. The
+      bridge can enable rerere, apply recorded resolutions, inspect status and forget paths.
 
 ## Phase 7 — Worktree management
 
@@ -462,15 +526,42 @@ Two facts decided more than the commands did, and both came from running git:
 
 Nothing else on this list is unique to this app. These are.
 
-- [ ] **Cross-worktree compare** — two agents solved the same task; diff their solutions
-      against each other, not just against main. Cut from V1 and still the strongest idea
-      here.
-- [ ] **Accept this agent's work** — one action: merge or cherry-pick a worktree's branch
+- [x] **Cross-worktree compare** — two agents solved the same task; choose any other usable
+      worktree from the refs panel and compare the two live, Git-visible snapshots without
+      changing the active worktree. Tracked and non-ignored untracked files are included,
+      ignored files are excluded, exact renames retain both paths, and binary files remain
+      visible with byte metadata. Selecting a row opens a read-only Monaco diff; the ordinary
+      worktree tabs and editor state are restored when the comparison closes.
+- [x] **Accept this agent's work** — one action: merge or cherry-pick a worktree's branch
       into main, then optionally remove the worktree.
-- [ ] **Reject and reset** — discard a worktree's work and reset it to base
-- [ ] Batch review — walk every worktree's changes in sequence with a keystroke
-- [ ] Link a worktree to the agent session that produced it, if the session log is on disk
-- [ ] "What changed since I last looked" — per-worktree review watermark
+      → Requires a clean source (tracked, staged and ordinary untracked changes are refused).
+      Merge preserves the agent boundary with `--no-ff`; cherry-pick applies linear commits
+      atomically and leaves conflicts for the existing resolver. A successful integration is
+      one undo point. Optional removal rechecks the source branch, tip and status — including
+      ignored content — and leaves the directory in place when anything changed after review.
+- [x] **Reject and reset** — discard a worktree's work and reset it to base
+      → A preview names commits, tracked changes, ordinary untracked files and ignored files.
+      Cleanup is restricted to those literal paths, then the branch is reset to its merge base
+      only if the source head, base head and content fingerprint are unchanged. The committed
+      tip gets a destructive undo point; discarded bytes do not.
+- [x] Batch review — walk every worktree's changes in sequence with a keystroke
+      → `[` / `]` move to the previous/next usable worktree with changes, across collapsed
+      repository groups too. The gesture marks the worktree being left only when its exact
+      displayed snapshot is still current; an agent edit during the scan remains visibly new.
+- [x] Link a worktree to the agent session that produced it, if the session log is on disk
+      → The refs panel scans the local Claude Code, Book and Codex stores for bounded metadata
+      prefixes, matching exact worktree paths first and Claude's encoded project folder as a
+      fallback. Branch and timestamp data rank otherwise-valid records, while a recorded cwd
+      for another worktree is never rescued by a common branch name. Transcript text stays on
+      disk; the bridge returns metadata only, and opening a log re-resolves its provider/id,
+      rejects reparse-point paths outside the known `.jsonl` roots, then hands the validated
+      file to the host shell. `L` (in the Worktrees section) and the external-link row action
+      open the newest match. Missing stores are an ordinary empty result, and malformed or
+      oversized records are ignored without blocking refs refresh.
+- [x] "What changed since I last looked" — per-worktree review watermark
+      → A SHA-256 snapshot of HEAD, staged/unstaged diffs, conflicts and ordinary untracked
+      bytes is persisted outside Git. Ignored build output is excluded, and marking carries
+      the fingerprint it was read against so unseen agent edits cannot be blessed.
 
 ---
 
@@ -498,26 +589,154 @@ Nothing else on this list is unique to this app. These are.
       rather than inheriting it — the Windows installer's default is `true`, which rewrites
       every line ending on checkout and fails content assertions for reasons unrelated to
       what is under test.
-- [ ] **Dry-run / preview** for anything destructive
-      *(One exists: pruning worktrees shows `worktree prune --dry-run` in the confirmation
-      before the button does anything, which is the shape to copy. It is the case where a
-      preview is not a nicety — the action names nothing on screen, because what it removes
-      is the record of directories that have already gone.)*
-- [ ] **Long-running operations** — the bridge has a 60s call timeout (`bridge.ts`); clone,
-      fetch, and push will exceed it. Needs a progress protocol, not a longer timeout.
-      *(Phase 2 built the first one and it is the shape to copy: the call returns an id
-      immediately and the work reports on the event channel, with a `cancel` method taking
-      the same id. Message generation was the first thing here that could legitimately
-      outlast a git command; push and clone are the next.)*
-- [ ] **Multi-instance safety** — two Chapter windows on the same repo, or Chapter plus
+- [x] **Dry-run / preview** for anything destructive
+      *(The first was pruning worktrees, which shows `worktree prune --dry-run` in the
+      confirmation before the button does anything. It was the case where a preview is not a
+      nicety — the action names nothing on screen, because what it removes is the record of
+      directories that have already gone — and it turned out to be the shape for the rest.)*
+      → Four more, each answering a question the dialog could not previously answer:
+      **removing a worktree** lists its uncommitted, untracked and *ignored* content;
+      **force-pushing** asks the server what it would replace; **pruning a remote** shows the
+      tracking refs that have gone from it; **deleting a branch** names the commits that would
+      be left with nothing pointing at them.
+      → The one that justifies the whole item is the worktree removal, and it is not the
+      obvious one. Git already refuses to remove a worktree with ignored content — that guard
+      was written in Phase 7 — so the dangerous case was never "git lets it through". It was
+      that both dialogs described a *path* while the thing at risk was a `.env`, and a user
+      who has read two warnings about a directory has not been told about the file.
+      → **A preview is asked, not done.** All four run outside `GitWriter` and so leave no
+      trace in the operation log, which is the record of what the app did. Two of them
+      nevertheless contact the server — `push --dry-run` and `remote prune --dry-run` are
+      network commands with the transfer left out — so they run under `GitIntent.Network`
+      rather than the read path. On the read path they would inherit `GCM_INTERACTIVE=never`
+      and fail authentication against every private remote, which is to say: fail in exactly
+      the case where somebody wanted to check first.
+      → Force-push earns its preview by asking the *remote*, not the tracking refs. The lease
+      in `--force-with-lease` is evaluated against the server's current tip, which is a fact
+      only the server has; a preview computed locally would be confident and stale in precisely
+      the situation the lease exists to catch. The dry run reports the old tip, and the commits
+      between it and the new one are what the remote would stop having.
+      → A preview that fails is not a veto. Every one of them degrades to the dialog's own
+      words plus a line saying why it could not look — an unreachable server is a reason to
+      think harder about a push, not a reason the app should refuse to ask the question.
+      → Deleting a branch is where the preview and git disagree on purpose. `git branch -d`
+      refuses when a branch is not merged into HEAD or its upstream; the preview counts commits
+      that *no remaining ref* would reach, and a branch can fail the first test while scoring
+      zero on the second. Git still decides — nothing here pre-empts it or passes `-D` on the
+      preview's evidence. What changed is that the second dialog stopped claiming "commits that
+      are on no other branch" when the preview can see that they are.
+      → Not everything destructive gets one, and the exceptions are deliberate: discarding a
+      hunk or a file is previewed by the diff already on screen, and dropping a stash or
+      deleting a tag restores exactly from the undo point, so a list of contents would be
+      answering a question nobody has.
+- [x] **Long-running operations** — the bridge has a 60s call timeout (`bridge.ts`), and
+      fetch, push and clone all outlive it. Each returns an id immediately and reports on the
+      event channel, with a `cancel` method taking the same id.
+      *(Phase 2 built the first one and it was the shape to copy: message generation was the
+      first thing here that could legitimately outlast a git command; the remote operations
+      and clone are the rest.)*
+      → Clone is the odd one out and the reason the protocol earned a second implementation
+      rather than a parameter. Every other detached operation has a worktree to guard, a
+      writer to invalidate and a rail entry to refresh; a clone has **no repository yet**, so
+      the destination is validated before git starts — it must not exist, its parent must,
+      and neither string may hold control characters or a leading dash that git would read as
+      an option. The registration that follows is what makes it feel like an app action
+      rather than a command: the finished clone is added to the workspace without disturbing
+      the tab you were on, and a failure to register is reported without unwinding a transfer
+      that actually succeeded.
+      → Progress parsing moved out of the remote path into `ProgressLineParser` when clone
+      needed the same thing. Git separates transfer status with carriage returns as well as
+      newlines and does not terminate the last one at all, so the parser breaks on either,
+      drops repeated identical lines, bounds an over-long one rather than growing a buffer,
+      and flushes what is left when the process closes its streams — otherwise the message a
+      user most wants, the final one, is the single line that never arrives.
+- [x] **Multi-instance safety** — two Chapter windows on the same repo, or Chapter plus
       Rider, both writing
-      *(One case is handled: a hunk selection carries a fingerprint of the diff it was made
-      against, and the backend refuses when the file changed in between. Without it the user
-      approves hunk 2 of one diff and the app stages hunk 2 of another — which, in a
+      *(One case was already handled: a hunk selection carries a fingerprint of the diff it
+      was made against, and the backend refuses when the file changed in between. Without it
+      the user approves hunk 2 of one diff and the app stages hunk 2 of another — which, in a
       worktree an agent is actively writing to, is not a hypothetical.)*
-- [ ] **Keyboard-first** — the whole point of the app; every new action needs a binding
-- [ ] **`.gitattributes`** — still missing, and now that the app writes files, line-ending
-      normalization stops being cosmetic
+      → The general case is `RepositoryWriteLock`: a short repository-wide lease held around
+      a whole mutation, from the guard re-read to the classification of git's result. Git's
+      own `index.lock` protects one low-level write, which is not the failure here — two
+      windows can each read the same branch and stash list, then act on a snapshot the other
+      has already invalidated, and both writes individually succeed. The guard is re-read
+      *after* the lease is taken, because checking before it means checking a state that was
+      allowed to change while queuing.
+      → It is a file-region lock, not a lock file, and it lives outside git's namespace. The
+      operating system releases a byte-range lock when the process dies, so a killed Chapter
+      cannot leave a stale marker that the next one has to be taught to break — the failure
+      mode that makes hand-rolled lock files worse than what they replace. Linked worktrees
+      resolve to their common git directory first, so every worktree of one repository
+      converges on the same lease. Waiting is bounded at two seconds and then refused as
+      `Locked` — "another Chapter instance is writing this repository — try again" — because
+      a mutation that silently blocks is indistinguishable from one that hung.
+      → **This coordinates Chapter with Chapter, not Chapter with Rider.** Nothing here
+      constrains another program; against an external writer the app still relies on git's
+      own locking and on the fingerprint checks that refuse a stale plan.
+- [x] **Keyboard-first** — the whole point of the app; every new action needs a binding
+      → Audited rather than assumed, and the audit was worse than expected. The refs panel
+      had **twenty-five row actions and twelve footer buttons with no key path at all**:
+      `Tab` is spent cycling sections, so nothing there was reachable except by mouse.
+      → Worse, the three that were documented did not work either. `A`, `R` and `L` are
+      guarded by "not while typing", the filter is an `<input>`, and the filter takes focus
+      when the panel opens and again on every section change — so the panel's own hint bar,
+      the help overlay and the README all named shortcuts that fired only after a click had
+      moved focus somewhere else.
+      → The fix is roving focus: `→` from the end of the filter steps into the selected row's
+      actions and then the footer, `←` walks back and off the front returns to the filter with
+      the caret at the end. Chosen over a mnemonic per action because there are thirty-seven of
+      them and no letters left, and over "letters act when the filter is empty" because
+      filtering for `agent-1` is what the filter is for. It also gives `A`/`R`/`L` the thing
+      they were missing: a way to leave the filter.
+      → Two smaller things fell out of it. `Enter` on a focused button ran the *row's* primary
+      action rather than the button — already true for a button reached by clicking, and it
+      would have made the new navigation actively wrong. And every render rebuilds the list, so
+      the focused control is destroyed several times a second while a fetch reports progress;
+      the render now hands focus back to the same action *by name*, not by position, because a
+      worktree row swaps Lock for Unlock and the footer gains and loses Prune.
+      → A third came out of driving the built app rather than reading it, which is the only
+      way it would have: **answering or cancelling an inline prompt left the whole panel
+      keyboard-dead.** `finish()` rebuilds the footer, which destroys the input focus was in,
+      and focus lands on `<body>` — outside the element the panel's handler is bound to, so
+      every key after that went nowhere. It looked exactly like a filter that had stopped
+      accepting text.
+      → So did a fourth, and it is the largest: **five documented shortcuts died whenever the
+      caret was in the editor.** Monaco binds `Ctrl` `H` to Replace, `Ctrl` `G` to Go to Line
+      and `Ctrl` `Shift` `O` to Go to Symbol, and it stops those events before the window
+      listener runs — so History, Write the commit message and Clone were all reachable only
+      from a toolbar. Registered on the editors themselves, which is the pattern `Ctrl` `S`
+      and `Ctrl` `D` already use for the same reason, and checked against Monaco's own
+      keybinding source rather than from memory: `Ctrl` `O`, `Ctrl` `Shift` `E`, `Ctrl` `\`
+      and `Ctrl` `Shift` `H` are unbound there and needed nothing. `Ctrl` `F` is deliberately
+      left alone — that one is Monaco's Find, which the app has no replacement for.
+      → The other two are `Ctrl` `B` and `Ctrl` `Shift` `B`, and they are why this note says
+      *driven* rather than *read*. Reading finds nothing: Monaco's source binds neither, and
+      an earlier commit recorded both as checked from inside the editor. Running the built app
+      says otherwise — the refs panel does not open with the caret in a pane and opens at once
+      from the file list. Registering them on the editors alongside the other three makes them
+      work there, which is the whole requirement; the dispatch that was eating them is
+      Monaco's, not a default in its keymap.
+      → Elsewhere: `Ctrl` `O` adds a repository, `Ctrl` `Shift` `E` opens the file in Rider or
+      VS Code — a keystroke the README had promised since V1 and the app had never had — and
+      `Ctrl` `\` switches inline and side-by-side. In the history timeline, `↓` on the last row
+      loads the next page instead of wrapping to the newest commit, which was the last thing in
+      that overlay reachable only by clicking it.
+      → Standing rule rather than a finished job: this stays on the list as the thing every
+      new action has to satisfy, and the roving strip is what makes that cheap — an action
+      added to a refs row is reachable the moment it is rendered.
+- [x] **`.gitattributes`** — now that the app writes files, line-ending normalization stops
+      being cosmetic
+      → `* text=auto eol=lf`, with the source, config and documentation extensions named
+      explicitly and binary assets marked so nothing tries to normalize a PNG or a DLL. It
+      **pins what was already true rather than changing it**: `git ls-files --eol` reports
+      every tracked text file as `i/lf` in the index, so there is no renormalizing commit to
+      make and no diff to review. What it prevents is the next write. The Windows installer
+      defaults `core.autocrlf=true` — this checkout has it — which is why most working files
+      here are `w/crlf`, and an app that saves an edited file, stages a hunk or resolves a
+      conflict is one misconfigured machine away from committing a file whose every line
+      moved. The test fixtures already pin `core.autocrlf=false` for the same reason; this is
+      that lesson applied to the repository itself.
 
 ---
 
@@ -538,10 +757,21 @@ Nothing else on this list is unique to this app. These are.
    the git commands but in everything the app holds open: a worktree is a directory with a
    file watcher, a symbol index, editor models and the active selection all keyed to its
    path, and removing one means letting go of all of them in the right order.
-6. **Phase 5** — **Next**: push/pull. Blocked on credentials, so start that spike early. It
-   also now owns tag pushing, which Phase 3 deliberately left behind.
-7. **Phase 4 + 6** — history and conflicts. Both large; conflicts especially.
-8. **Phase 8** — the differentiators, once the fundamentals are solid.
+6. ~~**Phase 5**~~ — done. Remotes, credential-aware sync and progress. The network path is
+   detached from the bridge, and tag pushing now lives beside the other remote actions.
+7. ~~**Phase 4 + 6**~~ — done. History, interactive rebase and conflict resolution now share
+   the persistent operation surface; binary side choices and stash restores retain their
+   explicit safety limits.
+8. ~~**Phase 8**~~ — done. The differentiators, built last and on top of fundamentals that
+   were already solid, which is why each one is a composition of existing parts rather than
+   a new subsystem: comparison reuses the diff view, acceptance reuses the writer and the
+   undo log, rejection reuses the confirmation's preview.
 
-Phase 8 is tempting to do first because it's the interesting part. It won't survive
-contact with users until Phase 0 exists.
+Phase 8 was tempting to do first because it's the interesting part. It would not have
+survived contact with users until Phase 0 existed.
+
+**Every item on this roadmap is now done.** The two cross-cutting ones are ticked as of the
+work described above, but they are standing rules rather than closed boxes: a new destructive
+action needs a preview unless it is one of the named exceptions, and a new action of any kind
+needs a keyboard path. Both are cheap to keep now — the refs panel's roving focus reaches an
+action the moment it is rendered, and the preview shape is the same four lines each time.
