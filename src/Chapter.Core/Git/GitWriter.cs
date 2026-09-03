@@ -82,12 +82,196 @@ public sealed class GitWriter(GitCli git, OperationLog log)
     public async Task<GitMutation> RunAsync(
         string worktreePath, string operation, WriteKind kind, GitIntent intent,
         CancellationToken ct, params string[] args)
+        => await RunCoreAsync(worktreePath, operation, kind, intent, null, null, git.GitPath,
+            repositoryLease: true, ct, args)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// Runs a guarded mutation with per-process environment overrides.
+    ///
+    /// This is intentionally a narrow escape hatch rather than a public alternate write
+    /// path: the guard, lock retry, watcher scope and operation log remain exactly the same.
+    /// Interactive rebase uses it to point Git at a temporary sequence-editor helper.
+    /// </summary>
+    public Task<GitMutation> RunWithEnvironmentAsync(
+        string worktreePath,
+        string operation,
+        WriteKind kind,
+        GitIntent intent,
+        IReadOnlyDictionary<string, string?> environment,
+        CancellationToken ct,
+        params string[] args) =>
+        RunCoreAsync(worktreePath, operation, kind, intent, null, environment, git.GitPath,
+            repositoryLease: true, ct, args);
+
+    /// <summary>
+    /// Runs a mutation while forwarding git's output as it arrives.
+    ///
+    /// The ordinary path remains the default so local mutations do not pay for a streaming
+    /// reader. Remote operations use this overload to surface transfer progress while still
+    /// retaining the writer's guard, lock retry, self-write and operation-log guarantees.
+    /// </summary>
+    public Task<GitMutation> RunStreamingAsync(
+        string worktreePath, string operation, WriteKind kind, GitIntent intent,
+        Action<GitOutputChunk>? onOutput, CancellationToken ct, params string[] args) =>
+        RunCoreAsync(worktreePath, operation, kind, intent, onOutput, null, git.GitPath,
+            repositoryLease: true, ct, args);
+
+    /// <summary>
+    /// Runs a streaming mutation that does not take the repository lease.
+    ///
+    /// For the two network commands that cannot change this worktree: a fetch writes
+    /// remote-tracking refs and a push writes nothing locally at all. Both legitimately run
+    /// for minutes, and the lease is deliberately short — two seconds and then a refusal —
+    /// so holding it across a transfer turned every stage, discard or commit made during a
+    /// push into "another Chapter instance is writing this repository", with one window open
+    /// and nothing at risk. Overlapping *remote* operations are still refused, by
+    /// RemoteService's own per-worktree reservation. A pull is not in this set: it merges or
+    /// rebases into the working tree, which is exactly what the lease is for.
+    /// </summary>
+    public Task<GitMutation> RunUnleasedStreamingAsync(
+        string worktreePath, string operation, WriteKind kind, GitIntent intent,
+        Action<GitOutputChunk>? onOutput, CancellationToken ct, params string[] args) =>
+        RunCoreAsync(worktreePath, operation, kind, intent, onOutput, null, git.GitPath,
+            repositoryLease: false, ct, args);
+
+    /// <summary>
+    /// Runs a companion CLI through the same guarded mutation path as git. GitHub CLI is
+    /// intentionally not folded into <see cref="GitCli.GitPath"/>: it has its own command
+    /// vocabulary, but still mutates the checkout for actions such as <c>pr checkout</c>.
+    /// </summary>
+    public Task<GitMutation> RunExternalAsync(
+        string worktreePath, string operation, WriteKind kind, GitIntent intent,
+        string executable, CancellationToken ct, params string[] args) =>
+        RunCoreAsync(worktreePath, operation, kind, intent, null, null, executable,
+            repositoryLease: true, ct, args);
+
+    /// <summary>External-command overload with explicit environment hardening.</summary>
+    public Task<GitMutation> RunExternalAsync(
+        string worktreePath, string operation, WriteKind kind, GitIntent intent,
+        string executable, IReadOnlyDictionary<string, string?> environment,
+        CancellationToken ct, params string[] args) =>
+        RunCoreAsync(worktreePath, operation, kind, intent, null, environment, executable,
+            repositoryLease: true, ct, args);
+
+    /// <summary>Streaming counterpart for a long-running companion command.</summary>
+    public Task<GitMutation> RunExternalStreamingAsync(
+        string worktreePath, string operation, WriteKind kind, GitIntent intent,
+        string executable, Action<GitOutputChunk>? onOutput, CancellationToken ct,
+        params string[] args) =>
+        RunCoreAsync(worktreePath, operation, kind, intent, onOutput, null, executable,
+            repositoryLease: true, ct, args);
+
+    /// <summary>Streaming external-command overload with explicit environment hardening.</summary>
+    public Task<GitMutation> RunExternalStreamingAsync(
+        string worktreePath, string operation, WriteKind kind, GitIntent intent,
+        string executable, Action<GitOutputChunk>? onOutput,
+        IReadOnlyDictionary<string, string?> environment, CancellationToken ct,
+        params string[] args) =>
+        RunCoreAsync(worktreePath, operation, kind, intent, onOutput, environment, executable,
+            repositoryLease: true, ct, args);
+
+    /// <summary>
+    /// Runs a mutation while a caller-owned repository lease is held. Composite operations
+    /// such as discard need to delete working-tree paths and update the index as one unit;
+    /// taking the non-reentrant lease again would either deadlock or leave a race between
+    /// those two halves.
+    /// </summary>
+    internal async Task<GitMutation> RunUnderLeaseAsync(
+        RepositoryWriteLease lease,
+        string worktreePath,
+        string operation,
+        WriteKind kind,
+        GitIntent intent,
+        CancellationToken ct,
+        params string[] args)
     {
+        _ = lease; // Ownership is held by the caller for the duration of this task.
         if (Guard is not null)
         {
             var guard = await Guard(worktreePath, kind, ct).ConfigureAwait(false);
-            if (!guard.Allowed) return Refused(worktreePath, operation, args, guard.Reason);
+            if (!guard.Allowed)
+                return Refused(worktreePath, operation, args, guard.Reason, git.GitPath);
         }
+
+        return await ExecuteAndClassifyAsync(
+            worktreePath, operation, kind, intent, onOutput: null, environment: null,
+            executable: git.GitPath, ct, args).ConfigureAwait(false);
+    }
+
+    private async Task<GitMutation> RunCoreAsync(
+        string worktreePath, string operation, WriteKind kind, GitIntent intent,
+        Action<GitOutputChunk>? onOutput,
+        IReadOnlyDictionary<string, string?>? environment,
+        string executable,
+        bool repositoryLease,
+        CancellationToken ct,
+        params string[] args)
+    {
+        if (!repositoryLease)
+        {
+            if (Guard is not null)
+            {
+                var open = await Guard(worktreePath, kind, ct).ConfigureAwait(false);
+                if (!open.Allowed)
+                    return Refused(worktreePath, operation, args, open.Reason, executable);
+            }
+
+            return await ExecuteAndClassifyAsync(
+                worktreePath, operation, kind, intent, onOutput, environment,
+                executable, ct, args).ConfigureAwait(false);
+        }
+
+        // Git's index.lock protects one low-level write, not two Chapter windows both
+        // deciding from the same stale branch/stash snapshot. Hold a short repository-wide
+        // lease around the complete command, including its result classification, so our
+        // own instances serialize before Git gets a chance to race them.
+        var attempt = await RepositoryWriteLock.TryAcquireAsync(git, worktreePath, ct)
+            .ConfigureAwait(false);
+        if (attempt.Lease is null)
+        {
+            return Refused(
+                worktreePath,
+                operation,
+                args,
+                attempt.BusyInThisProcess
+                    ? "this window is already writing to this repository — wait for that to finish"
+                    : "another Chapter instance is writing this repository — try again",
+                executable,
+                GitFailure.Locked);
+        }
+
+        using (attempt.Lease)
+        {
+            // Re-read the guard after waiting. Another Chapter window may have changed the
+            // operation state while this call was queued; checking before the lease would
+            // let a stale "allowed" answer start a rebase/checkout after that change.
+            if (Guard is not null)
+            {
+                var guard = await Guard(worktreePath, kind, ct).ConfigureAwait(false);
+                if (!guard.Allowed)
+                    return Refused(worktreePath, operation, args, guard.Reason, executable);
+            }
+
+            return await ExecuteAndClassifyAsync(
+                worktreePath, operation, kind, intent, onOutput, environment,
+                executable, ct, args).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Runs the command and turns its result into a mutation: retry on lock contention,
+    /// failure classification, watcher scope, operation log. Says nothing about the
+    /// repository lease — one caller holds it, one was handed it, and one runs without it.
+    /// </summary>
+    private async Task<GitMutation> ExecuteAndClassifyAsync(
+        string worktreePath, string operation, WriteKind kind, GitIntent intent,
+        Action<GitOutputChunk>? onOutput,
+        IReadOnlyDictionary<string, string?>? environment,
+        string executable,
+        CancellationToken ct,
+        params string[] args)
+    {
 
         using var scope = SelfWriteScope?.Invoke(worktreePath);
 
@@ -95,17 +279,63 @@ public sealed class GitWriter(GitCli git, OperationLog log)
         GitResult result;
         var attempt = 0;
 
-        while (true)
+        try
         {
-            attempt++;
-            result = await git.ExecuteAsync(worktreePath, intent, ct, args).ConfigureAwait(false);
+            while (true)
+            {
+                attempt++;
+                // Spelled out rather than nested in a ternary. A trailing .ConfigureAwait
+                // binds to the branch it sits on, so the git arms — the ones almost every
+                // mutation takes — were awaited with context capture while only the external
+                // arms were not. That is a continuation onto the WPF dispatcher while this
+                // task holds both the per-repository semaphore and the cross-process lease.
+                var isGit = string.Equals(executable, git.GitPath, StringComparison.OrdinalIgnoreCase);
 
-            if (result.Success) break;
+                if (onOutput is null)
+                {
+                    result = isGit
+                        ? await git.ExecuteWithEnvironmentAsync(worktreePath, intent, environment, ct, args)
+                            .ConfigureAwait(false)
+                        : await git.ExecuteExternalAsync(executable, worktreePath, intent, environment, ct, args)
+                            .ConfigureAwait(false);
+                }
+                else
+                {
+                    result = isGit
+                        ? await git.ExecuteStreamingAsync(worktreePath, intent, onOutput, ct, args)
+                            .ConfigureAwait(false)
+                        : await git.ExecuteExternalStreamingAsync(
+                            executable, worktreePath, intent, onOutput, environment, ct, args)
+                            .ConfigureAwait(false);
+                }
 
-            var failure = GitFailureClassifier.Classify(result.StandardError, result.StandardOutput);
-            if (failure is not GitFailure.Locked || attempt > LockBackoff.Length) break;
+                if (result.Success) break;
 
-            await Task.Delay(LockBackoff[attempt - 1], ct).ConfigureAwait(false);
+                var failure = GitFailureClassifier.Classify(result.StandardError, result.StandardOutput);
+                if (failure is not GitFailure.Locked || attempt > LockBackoff.Length) break;
+
+                await Task.Delay(LockBackoff[attempt - 1], ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested && onOutput is not null)
+        {
+            stopwatch.Stop();
+            NotifyMutated(worktreePath);
+
+            var cancelled = new GitMutation
+            {
+                Operation = operation,
+                WorktreePath = worktreePath,
+                CommandLine = GitCli.DescribeCommand(executable, args),
+                ExitCode = -1,
+                Failure = GitFailure.Cancelled,
+                Detail = $"{operation} cancelled",
+                Attempts = attempt,
+                ElapsedMs = stopwatch.ElapsedMilliseconds,
+            };
+
+            Record(cancelled);
+            return cancelled;
         }
 
         stopwatch.Stop();
@@ -115,7 +345,7 @@ public sealed class GitWriter(GitCli git, OperationLog log)
         NotifyMutated(worktreePath);
 
         var mutation = await BuildAsync(
-            worktreePath, operation, result, attempt, stopwatch.ElapsedMilliseconds, ct).ConfigureAwait(false);
+            worktreePath, operation, result, attempt, stopwatch.ElapsedMilliseconds, executable, ct).ConfigureAwait(false);
 
         Record(mutation);
         return mutation;
@@ -138,7 +368,8 @@ public sealed class GitWriter(GitCli git, OperationLog log)
     }
 
     private async Task<GitMutation> BuildAsync(
-        string worktreePath, string operation, GitResult result, int attempts, long elapsedMs, CancellationToken ct)
+        string worktreePath, string operation, GitResult result, int attempts, long elapsedMs,
+        string executable, CancellationToken ct)
     {
         if (result.Success)
         {
@@ -213,18 +444,24 @@ public sealed class GitWriter(GitCli git, OperationLog log)
     /// but it still belongs in the log, because "why did nothing happen" is exactly the
     /// question the log exists to answer.
     /// </summary>
-    private GitMutation Refused(string worktreePath, string operation, string[] args, string? reason)
+    private GitMutation Refused(
+        string worktreePath,
+        string operation,
+        string[] args,
+        string? reason,
+        string executable,
+        GitFailure? failure = null)
     {
         var mutation = new GitMutation
         {
             Operation = operation,
             WorktreePath = worktreePath,
-            CommandLine = $"git {string.Join(' ', args)}",
+            CommandLine = GitCli.DescribeCommand(executable, args),
             ExitCode = -1,
             // The guard blocks for three different reasons and the classification has to
             // follow, or "there are unresolved conflicts" is reported to the UI as an
             // operation in progress and offered the wrong way out.
-            Failure = ClassifyRefusal(reason),
+            Failure = failure ?? ClassifyRefusal(reason),
             Detail = reason is null ? $"Could not {operation}" : $"Could not {operation}: {reason}",
             Attempts = 0,
         };

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Chapter.Core.Git;
 
@@ -26,6 +27,14 @@ public enum GitIntent
 /// </summary>
 public sealed class GitCli(string gitPath = "git")
 {
+    private static readonly Regex UriCredentials = new(
+        @"(?<scheme>\b[a-z][a-z0-9+.-]*://)(?<userinfo>[^/\s'""<>?\\#]*)@(?<host>[^/\s'""<>]+)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex ScpCredentials = new(
+        @"(?<![\w@])(?<userinfo>[^\s/:\\]+:[^\s@/:\\]+)@(?<host>[^\s/:\\]+):(?<path>[^\s]*)",
+        RegexOptions.Compiled);
+
     /// <summary>
     /// Arguments prepended to every invocation.
     /// <c>core.quotepath=false</c> stops git escaping non-ASCII path bytes as \303\251,
@@ -52,11 +61,11 @@ public sealed class GitCli(string gitPath = "git")
     /// <summary>
     /// Whether <see cref="GitIntent.Network"/> commands may raise a credential prompt.
     ///
-    /// False everywhere today, which is correct while nothing pushes or fetches. Phase 5
-    /// turns it on: until then a network command that needs credentials fails with an
-    /// opaque error instead of asking, and this is the single switch that changes it.
+    /// Enabled by default for network commands now that remote operations are exposed. It
+    /// remains a switch so hosts and tests that must be completely non-interactive can turn
+    /// credential-manager UI off explicitly.
     /// </summary>
-    public bool AllowCredentialPrompts { get; set; }
+    public bool AllowCredentialPrompts { get; set; } = true;
 
     /// <summary>Runs a read-only git command, returning stdout and throwing if it fails.</summary>
     public async Task<string> RunAsync(string workingDirectory, CancellationToken ct, params string[] args)
@@ -81,17 +90,92 @@ public sealed class GitCli(string gitPath = "git")
     /// a write executed with the read environment cannot take <c>index.lock</c>, so it
     /// fails or silently does nothing.
     /// </summary>
-    public async Task<GitResult> ExecuteAsync(
-        string workingDirectory, GitIntent intent, CancellationToken ct, params string[] args)
-    {
-        var psi = CreateStartInfo(workingDirectory, intent, args, utf8Stdout: true);
-        var commandLine = DescribeCommand(args);
+    public Task<GitResult> ExecuteAsync(
+        string workingDirectory, GitIntent intent, CancellationToken ct, params string[] args) =>
+        ExecuteWithEnvironmentAsync(workingDirectory, intent, null, ct, args);
 
-        using var process = Start(psi, commandLine);
+    /// <summary>
+    /// Runs a companion command (for example <c>gh</c>) with the same safe process
+    /// plumbing as git. Keeping this here means external git tools cannot accidentally
+    /// inherit a shell, an interactive terminal, or an unbounded process lifetime.
+    /// </summary>
+    public Task<GitResult> ExecuteExternalAsync(
+        string executable,
+        string workingDirectory,
+        GitIntent intent,
+        IReadOnlyDictionary<string, string?>? environment,
+        CancellationToken ct,
+        params string[] args) =>
+        ExecuteCoreAsync(workingDirectory, intent, environment, ct, executable, args, onOutput: null);
+
+    /// <summary>
+    /// Runs a command with a small set of per-invocation environment overrides.
+    ///
+    /// Git's sequence editor is intentionally disabled for ordinary calls, because an
+    /// editor prompt has nowhere to go in the desktop host. Interactive rebase is the one
+    /// operation that needs a controlled editor, so it supplies a temporary script here
+    /// rather than changing the process-wide environment or bypassing <see cref="GitWriter"/>.
+    /// A null value removes an inherited variable.
+    /// </summary>
+    public Task<GitResult> ExecuteWithEnvironmentAsync(
+        string workingDirectory,
+        GitIntent intent,
+        IReadOnlyDictionary<string, string?>? environment,
+        CancellationToken ct,
+        params string[] args) =>
+        ExecuteCoreAsync(workingDirectory, intent, environment, ct, GitPath, args, onOutput: null);
+
+    /// <summary>Streaming counterpart to <see cref="ExecuteExternalAsync"/>.</summary>
+    public Task<GitResult> ExecuteExternalStreamingAsync(
+        string executable,
+        string workingDirectory,
+        GitIntent intent,
+        Action<GitOutputChunk>? onOutput,
+        IReadOnlyDictionary<string, string?>? environment,
+        CancellationToken ct,
+        params string[] args) =>
+        ExecuteCoreAsync(workingDirectory, intent, environment, ct, executable, args, onOutput);
+
+    private async Task<GitResult> ExecuteCoreAsync(
+        string workingDirectory,
+        GitIntent intent,
+        IReadOnlyDictionary<string, string?>? environment,
+        CancellationToken ct,
+        string executable,
+        string[] args,
+        Action<GitOutputChunk>? onOutput)
+    {
+        var psi = CreateStartInfo(executable, workingDirectory, intent, args, utf8Stdout: true, environment);
+        var commandLine = DescribeCommand(executable, args);
+
+        using var process = Start(psi, commandLine, executable);
         process.StandardInput.Close();
 
         // Read both streams concurrently. Reading them in sequence deadlocks as soon as
         // the other stream's pipe buffer fills, which large diffs do routinely.
+        if (onOutput is not null)
+        {
+            var streamedStdout = new StringBuilder();
+            var streamedStderr = new StringBuilder();
+            var streamedStdoutTask = ReadChunksAsync(process.StandardOutput, GitOutputStream.StandardOutput, streamedStdout, onOutput, ct);
+            var streamedStderrTask = ReadChunksAsync(process.StandardError, GitOutputStream.StandardError, streamedStderr, onOutput, ct);
+
+            try
+            {
+                await process.WaitForExitAsync(ct).ConfigureAwait(false);
+                await Task.WhenAll(streamedStdoutTask, streamedStderrTask).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKill(process);
+                try { await Task.WhenAll(streamedStdoutTask, streamedStderrTask).ConfigureAwait(false); }
+                catch { }
+                throw;
+            }
+
+            return new GitResult(commandLine, process.ExitCode, streamedStdout.ToString(), streamedStderr.ToString());
+        }
+
         var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
         var stderrTask = process.StandardError.ReadToEndAsync(ct);
 
@@ -112,15 +196,61 @@ public sealed class GitCli(string gitPath = "git")
     }
 
     /// <summary>
+    /// Runs git while forwarding output as it arrives.
+    ///
+    /// Git deliberately writes transfer progress to stderr (and rewrites the same line with
+    /// carriage returns), so waiting for <c>ReadToEndAsync</c> makes a fetch or push look
+    /// frozen until it is already over. The complete streams are still returned for the
+    /// mutation result; the callback is only the live view of them.
+    /// </summary>
+    public async Task<GitResult> ExecuteStreamingAsync(
+        string workingDirectory,
+        GitIntent intent,
+        Action<GitOutputChunk>? onOutput,
+        CancellationToken ct,
+        params string[] args)
+    {
+        var psi = CreateStartInfo(GitPath, workingDirectory, intent, args, utf8Stdout: true, environment: null);
+        var commandLine = DescribeCommand(GitPath, args);
+
+        using var process = Start(psi, commandLine, GitPath);
+        process.StandardInput.Close();
+
+        var stdout = new StringBuilder();
+        var stderr = new StringBuilder();
+        var stdoutTask = ReadChunksAsync(process.StandardOutput, GitOutputStream.StandardOutput, stdout, onOutput, ct);
+        var stderrTask = ReadChunksAsync(process.StandardError, GitOutputStream.StandardError, stderr, onOutput, ct);
+
+        try
+        {
+            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            TryKill(process);
+
+            // Let both readers observe the closed pipes before disposing the process. Their
+            // exceptions are secondary to the cancellation and must not mask it.
+            try { await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false); }
+            catch { }
+
+            throw;
+        }
+
+        return new GitResult(commandLine, process.ExitCode, stdout.ToString(), stderr.ToString());
+    }
+
+    /// <summary>
     /// Runs git and returns stdout as raw bytes. Needed for file content, which may be
     /// any encoding or genuinely binary; decoding as UTF-8 would corrupt it.
     /// </summary>
     public async Task<GitBytesResult> RunBytesAsync(string workingDirectory, CancellationToken ct, params string[] args)
     {
-        var psi = CreateStartInfo(workingDirectory, GitIntent.Read, args, utf8Stdout: false);
-        var commandLine = DescribeCommand(args);
+        var psi = CreateStartInfo(GitPath, workingDirectory, GitIntent.Read, args, utf8Stdout: false);
+        var commandLine = DescribeCommand(GitPath, args);
 
-        using var process = Start(psi, commandLine);
+        using var process = Start(psi, commandLine, GitPath);
         process.StandardInput.Close();
 
         using var buffer = new MemoryStream();
@@ -143,9 +273,14 @@ public sealed class GitCli(string gitPath = "git")
     }
 
     private ProcessStartInfo CreateStartInfo(
-        string workingDirectory, GitIntent intent, string[] args, bool utf8Stdout)
+        string executable,
+        string workingDirectory,
+        GitIntent intent,
+        string[] args,
+        bool utf8Stdout,
+        IReadOnlyDictionary<string, string?>? environment = null)
     {
-        var psi = new ProcessStartInfo(GitPath)
+        var psi = new ProcessStartInfo(executable)
         {
             WorkingDirectory = workingDirectory,
             RedirectStandardOutput = true,
@@ -160,10 +295,24 @@ public sealed class GitCli(string gitPath = "git")
         // the caller asked for raw.
         if (utf8Stdout) psi.StandardOutputEncoding = Encoding.UTF8;
 
-        foreach (var a in GlobalArgs) psi.ArgumentList.Add(a);
+        // Companion tools such as `gh` do not understand git's global `-c` options.
+        // Only prepend them when this invocation is actually git.
+        if (string.Equals(executable, GitPath, StringComparison.OrdinalIgnoreCase))
+            foreach (var a in GlobalArgs) psi.ArgumentList.Add(a);
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         ApplyEnvironment(psi, intent);
+
+        if (environment is not null)
+        {
+            foreach (var (name, value) in environment)
+            {
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                if (value is null) psi.Environment.Remove(name);
+                else psi.Environment[name] = value;
+            }
+        }
+
         return psi;
     }
 
@@ -210,7 +359,7 @@ public sealed class GitCli(string gitPath = "git")
         else psi.Environment["GCM_INTERACTIVE"] = "never";
     }
 
-    private Process Start(ProcessStartInfo psi, string commandLine)
+    private Process Start(ProcessStartInfo psi, string commandLine, string executable)
     {
         var process = new Process { StartInfo = psi };
         try
@@ -221,11 +370,70 @@ public sealed class GitCli(string gitPath = "git")
         catch (Exception ex)
         {
             process.Dispose();
-            throw new GitException(commandLine, -1, $"Failed to start '{GitPath}': {ex.Message}");
+            // Use the executable that was actually requested. External tools such as `gh`
+            // share this process wrapper, and blaming the configured git binary makes a
+            // missing companion CLI needlessly difficult to diagnose.
+            throw new GitException(commandLine, -1, $"Failed to start '{executable}': {ex.Message}");
         }
     }
 
-    private static string DescribeCommand(string[] args) => $"git {string.Join(' ', args)}";
+    internal static string DescribeCommand(string[] args) => DescribeCommand("git", args);
+
+    internal static string DescribeCommand(string executable, string[] args) =>
+        $"{Path.GetFileNameWithoutExtension(executable)} {string.Join(' ', args.Select(RedactArgument))}";
+
+    /// <summary>
+    /// Keeps credentials embedded in a remote URL out of mutation results and the persistent
+    /// operation log. Git accepts URLs with userinfo, and a remote-add command is otherwise a
+    /// surprisingly easy way to write a token to disk forever.
+    /// </summary>
+    internal static string RedactArgument(string argument) => RedactText(argument);
+
+    /// <summary>
+    /// Removes embedded credentials from arbitrary git output too.
+    ///
+    /// Authentication failures commonly echo the URL. That text becomes the mutation's
+    /// user-facing message and is persisted in the operation log, so redacting command
+    /// arguments alone is not enough.
+    /// </summary>
+    internal static string RedactText(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+
+        var redacted = UriCredentials.Replace(text, match =>
+            $"{match.Groups["scheme"].Value}***@{match.Groups["host"].Value}");
+        return ScpCredentials.Replace(redacted, "***@${host}:${path}");
+    }
+
+    private static async Task ReadChunksAsync(
+        StreamReader reader,
+        GitOutputStream stream,
+        StringBuilder destination,
+        Action<GitOutputChunk>? onOutput,
+        CancellationToken ct)
+    {
+        var buffer = new char[4096];
+
+        while (true)
+        {
+            var count = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
+            if (count == 0) break;
+
+            var text = new string(buffer, 0, count);
+            destination.Append(text);
+
+            if (onOutput is null) continue;
+
+            try
+            {
+                onOutput(new GitOutputChunk(stream, text));
+            }
+            catch
+            {
+                // Progress is observational. A UI subscriber must never kill the git process.
+            }
+        }
+    }
 
     private static void TryKill(Process process)
     {
@@ -239,6 +447,14 @@ public sealed class GitCli(string gitPath = "git")
         }
     }
 }
+
+public enum GitOutputStream
+{
+    StandardOutput,
+    StandardError,
+}
+
+public sealed record GitOutputChunk(GitOutputStream Stream, string Text);
 
 public sealed record GitResult(string CommandLine, int ExitCode, string StandardOutput, string StandardError)
 {

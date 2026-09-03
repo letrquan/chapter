@@ -29,9 +29,8 @@ public sealed record Branch
     /// <summary>
     /// Commits this branch has that its upstream does not, and vice versa.
     ///
-    /// Both null when there is no upstream, and both zero when the two agree. These come
-    /// from the last fetch rather than from the network — nothing in this phase talks to a
-    /// remote, so the counts are as old as the last time something did.
+    /// Both null when there is no upstream, and both zero when the two agree. These are local
+    /// tracking-ref counts, so they are as current as the last fetch or other remote sync.
     /// </summary>
     public int? Ahead { get; init; }
 
@@ -63,6 +62,21 @@ public enum CheckoutStrategy
 
     /// <summary>Stash first, switch, then restore the stash on the new branch.</summary>
     StashAndSwitch,
+}
+
+/// <summary>What deleting a branch would leave with nothing pointing at it.</summary>
+public sealed record BranchDeletionPreview
+{
+    public required string Branch { get; init; }
+    public bool Ok { get; init; }
+    public string Tip { get; init; } = "";
+
+    /// <summary>
+    /// Newest first, capped: a branch nobody merged can be hundreds of commits, and a
+    /// confirmation dialog is not the place to read them all.
+    /// </summary>
+    public IReadOnlyList<string> UnreachableCommits { get; init; } = [];
+    public string Message { get; init; } = "";
 }
 
 /// <summary>
@@ -163,6 +177,12 @@ public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo
 
             var worktree = fields[4];
             var (ahead, behind, gone) = ParseTrack(fields[3]);
+
+            // Git leaves the tracking summary empty when the two tips agree. Keep the
+            // distinction between "no upstream" and "an upstream at zero distance" in the
+            // model; callers can then render an explicit in-sync state without guessing.
+            if (fields[2].Length > 0 && !gone)
+                (ahead, behind) = (ahead ?? 0, behind ?? 0);
 
             branches.Add(new Branch
             {
@@ -494,6 +514,59 @@ public sealed class BranchService(GitCli git, GitWriter writer, UndoService undo
             : writer.RunAsync(
                 worktreePath, $"track {upstream} with {branch}", WriteKind.WorkingTree, ct,
                 ["branch", $"--set-upstream-to={upstream}", branch]);
+
+    /// <summary>
+    /// The commits that would be reachable from nothing once a branch is gone.
+    ///
+    /// Deliberately not the same question git's <c>-d</c> asks. Git refuses when a branch is
+    /// not merged into HEAD or its upstream, which can be true of a branch whose every commit
+    /// is also on three other branches; this counts what no remaining ref points at. The two
+    /// answers disagree often enough that the preview describes what it measured rather than
+    /// predicting what git will do — git is still the one that decides.
+    /// </summary>
+    public async Task<BranchDeletionPreview> PreviewDeleteAsync(
+        string worktreePath, string name, CancellationToken ct = default)
+    {
+        var invalid = Validate(name);
+        if (invalid is not null)
+            return new BranchDeletionPreview { Branch = name, Ok = false, Message = invalid };
+
+        var tip = await ResolveAsync(worktreePath, name, ct).ConfigureAwait(false);
+        if (tip is null)
+            return new BranchDeletionPreview
+            {
+                Branch = name,
+                Ok = false,
+                Message = $"{name} does not resolve to a commit",
+            };
+
+        // --exclude applies to the --all that follows it, so this reads "everything on the
+        // branch that is not on any other ref". The order matters: --not inverts what comes
+        // after it, and the exclusion has to be attached to the refs being subtracted.
+        var result = await git.TryRunAsync(
+            worktreePath, ct,
+            "log", "--format=%h %s", "--no-decorate", "-n", "50",
+            name, "--not", $"--exclude=refs/heads/{name}", "--all")
+            .ConfigureAwait(false);
+
+        if (!result.Success)
+            return new BranchDeletionPreview
+            {
+                Branch = name,
+                Ok = false,
+                Tip = tip,
+                Message = GitCli.RedactText(result.StandardError).Trim(),
+            };
+
+        return new BranchDeletionPreview
+        {
+            Branch = name,
+            Ok = true,
+            Tip = tip,
+            UnreachableCommits = result.StandardOutput.Split(
+                '\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+        };
+    }
 
     private async Task<string?> ResolveAsync(string worktreePath, string rev, CancellationToken ct)
     {

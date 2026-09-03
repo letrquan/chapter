@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Chapter.Core;
 
@@ -41,6 +42,12 @@ public sealed class AppSettings
     /// project by another path.
     /// </summary>
     public Dictionary<string, Git.CommitMessagePolicy> CommitPolicies { get; set; } = [];
+
+    /// <summary>
+    /// The last content snapshot the user explicitly reviewed for each worktree. This is
+    /// deliberately metadata rather than a Git ref: reviewing must never write to a repo.
+    /// </summary>
+    public Dictionary<string, ReviewWatermark> ReviewWatermarks { get; set; } = [];
 
     /// <summary>
     /// The policy governing a worktree: its own entry, otherwise the entry of whichever
@@ -86,14 +93,21 @@ public sealed class AppSettings
 
     public static string FilePath => Path.Combine(DirectoryPath, "settings.json");
 
-    public static AppSettings Load()
+    /// <summary>The destination used by <see cref="Save"/>. Overridable by tests only.</summary>
+    [JsonIgnore]
+    internal string StoragePath { get; set; } = FilePath;
+
+    public static AppSettings Load() => Load(FilePath);
+
+    internal static AppSettings Load(string filePath)
     {
         try
         {
-            if (!File.Exists(FilePath)) return new AppSettings();
+            if (!File.Exists(filePath)) return new AppSettings { StoragePath = filePath };
 
-            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), Json)
+            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(filePath), Json)
                            ?? new AppSettings();
+            settings.StoragePath = filePath;
 
             // Parseable JSON with an explicit null member — what a truncated write or a
             // hand edit produces — deserialises past the property initialisers without
@@ -105,6 +119,7 @@ public sealed class AppSettings
             settings.Theme ??= "system";
             settings.PreferredEditor ??= "";
             settings.CommitPolicies ??= [];
+            settings.ReviewWatermarks ??= [];
             settings.DefaultCommitPolicy ??= new Git.CommitMessagePolicy();
             settings.Ai ??= new Ai.AiSettings();
             settings.Ai.Model ??= "claude-opus-5";
@@ -117,7 +132,7 @@ public sealed class AppSettings
         catch
         {
             // A corrupt settings file must never stop the app starting; defaults are fine.
-            return new AppSettings();
+            return new AppSettings { StoragePath = filePath };
         }
     }
 
@@ -125,8 +140,9 @@ public sealed class AppSettings
     {
         try
         {
-            Directory.CreateDirectory(DirectoryPath);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, Json));
+            var directory = Path.GetDirectoryName(StoragePath);
+            if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
+            File.WriteAllText(StoragePath, JsonSerializer.Serialize(this, Json));
         }
         catch
         {

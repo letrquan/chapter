@@ -7,6 +7,25 @@ namespace Chapter.Core.Git;
 /// </param>
 public sealed record PrunableEntry(string Name, string Reason);
 
+/// <summary>What a worktree directory holds, read before it is offered for deletion.</summary>
+public sealed record WorktreeRemovalPreview
+{
+    public required string Path { get; init; }
+    public bool Ok { get; init; }
+
+    /// <summary>False for a prunable record: the directory is already gone.</summary>
+    public bool Exists { get; init; }
+    public bool IsLocked { get; init; }
+    public string Branch { get; init; } = "";
+    public IReadOnlyList<string> ChangedPaths { get; init; } = [];
+    public IReadOnlyList<string> UntrackedPaths { get; init; } = [];
+    public IReadOnlyList<string> IgnoredPaths { get; init; } = [];
+    public string Message { get; init; } = "";
+
+    public bool HasContent =>
+        ChangedPaths.Count > 0 || UntrackedPaths.Count > 0 || IgnoredPaths.Count > 0;
+}
+
 /// <summary>
 /// Discovers the worktrees belonging to a repository, and edits the set.
 ///
@@ -27,8 +46,53 @@ public sealed class WorktreeService(GitCli git, GitWriter writer)
     public async Task<IReadOnlyList<Worktree>> ListAsync(string anyPathInRepo, CancellationToken ct = default)
     {
         var output = await git.RunAsync(anyPathInRepo, ct, "worktree", "list", "--porcelain").ConfigureAwait(false);
-        return Parse(output);
+        var worktrees = Parse(output);
+
+        // `worktree list` deliberately knows nothing about tracking. Read it once for the
+        // repository and join by branch instead of spawning a command per rail row.
+        var tracking = await ReadTrackingAsync(anyPathInRepo, ct).ConfigureAwait(false);
+        return [.. worktrees.Select(worktree =>
+        {
+            if (worktree.Branch is null || !tracking.TryGetValue(worktree.Branch, out var state))
+                return worktree;
+
+            return worktree with
+            {
+                Upstream = state.Upstream,
+                Ahead = state.Ahead,
+                Behind = state.Behind,
+                IsUpstreamGone = state.Gone,
+            };
+        })];
     }
+
+    private async Task<IReadOnlyDictionary<string, TrackingState>> ReadTrackingAsync(
+        string worktreePath, CancellationToken ct)
+    {
+        var result = await git.TryRunAsync(
+            worktreePath, ct,
+            "for-each-ref", "--format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track)",
+            "refs/heads").ConfigureAwait(false);
+
+        if (!result.Success) return new Dictionary<string, TrackingState>(StringComparer.Ordinal);
+
+        var states = new Dictionary<string, TrackingState>(StringComparer.Ordinal);
+        foreach (var raw in result.StandardOutput.Split('\n'))
+        {
+            var fields = raw.TrimEnd('\r').Split(BranchService.SeparatorChar, 3);
+            if (fields.Length < 3 || fields[0].Length == 0) continue;
+
+            var (ahead, behind, gone) = BranchService.ParseTrack(fields[2]);
+            if (fields[1].Length > 0 && !gone)
+                (ahead, behind) = (ahead ?? 0, behind ?? 0);
+            states[fields[0]] = new TrackingState(
+                fields[1].Length == 0 ? null : fields[1], ahead, behind, gone);
+        }
+
+        return states;
+    }
+
+    private sealed record TrackingState(string? Upstream, int? Ahead, int? Behind, bool Gone);
 
     /// <summary>
     /// Parses <c>git worktree list --porcelain</c>. Records are separated by blank lines;
@@ -264,11 +328,149 @@ public sealed class WorktreeService(GitCli git, GitWriter writer)
         if (worktree!.IsMain)
             return Refused(host!, operation, "the main worktree cannot be removed — it is the repository");
 
+        // Git's ordinary removal check ignores files matched by .gitignore. That is a
+        // dangerous surprise for an app whose confirmation explicitly promises to name
+        // everything the directory contains: a lone .env or node_modules would otherwise
+        // disappear without the second, deliberate force confirmation. Keep the lock as a
+        // separate decision first; unlocking is the only honest way past a worktree lock.
+        if (worktree.IsLocked)
+            return Refused(host!, operation, "the worktree is locked — unlock it before removing");
+
+        if (!force)
+        {
+            var ignored = await HasIgnoredContentAsync(worktree.Path, ct).ConfigureAwait(false);
+            if (!ignored.Success)
+                return Refused(host!, operation,
+                    "the worktree's ignored files could not be checked safely",
+                    GitFailure.Unknown);
+
+            if (ignored.HasIgnored)
+                return Refused(host!, operation,
+                    "the worktree contains ignored files; use force only after checking them",
+                    GitFailure.WouldLoseChanges);
+        }
+
         List<string> args = ["worktree", "remove"];
         if (force) args.Add("--force");
         args.Add(worktree.Path);
 
         return await writer.RunAsync(host!, operation, WriteKind.WorkingTree, ct, [.. args]).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// What removing a worktree would delete, before the question is asked.
+    ///
+    /// Git's own refusal is the safety net, and it is a late one: it arrives after the user
+    /// has said yes to a dialog that named a directory and nothing inside it. The removal
+    /// path already knows that <c>status</c> omits ignored files, and refuses rather than
+    /// deleting a <c>.env</c> in silence — this reads the same records so the first dialog
+    /// can say what is there instead of the second one saying that something is.
+    /// </summary>
+    public async Task<WorktreeRemovalPreview> PreviewRemoveAsync(
+        string anyPathInRepo, string target, CancellationToken ct = default)
+    {
+        var worktrees = await ListAsync(anyPathInRepo, ct).ConfigureAwait(false);
+
+        // The same comparison ResolveTargetAsync makes, for the same reason: the front-end
+        // supplies the path, and only a worktree this repository admits to may be described.
+        var normalised = target.TrimEnd(Path.DirectorySeparatorChar, '/');
+        var worktree = worktrees.FirstOrDefault(w =>
+            string.Equals(w.Path.TrimEnd(Path.DirectorySeparatorChar, '/'), normalised,
+                StringComparison.OrdinalIgnoreCase));
+
+        // A prunable record has no directory left to read. That is not a failed preview: it
+        // is the honest answer that there are no bytes to lose.
+        if (worktree is null || !Directory.Exists(worktree.Path))
+            return new WorktreeRemovalPreview { Path = target, Ok = true, Exists = false };
+
+        GitResult result;
+        try
+        {
+            result = await git.TryRunAsync(
+                worktree.Path, ct, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored")
+                .ConfigureAwait(false);
+        }
+        catch (GitException ex)
+        {
+            return new WorktreeRemovalPreview
+            {
+                Path = worktree.Path,
+                Ok = false,
+                Exists = true,
+                IsLocked = worktree.IsLocked,
+                Message = GitCli.RedactText(ex.StandardError).Trim(),
+            };
+        }
+
+        if (!result.Success)
+            return new WorktreeRemovalPreview
+            {
+                Path = worktree.Path,
+                Ok = false,
+                Exists = true,
+                IsLocked = worktree.IsLocked,
+                Message = GitCli.RedactText(result.StandardError).Trim(),
+            };
+
+        var changed = new List<string>();
+        var untracked = new List<string>();
+        var ignored = new List<string>();
+
+        foreach (var record in RepoPaths.SplitNul(result.StandardOutput))
+        {
+            if (record.StartsWith("! ", StringComparison.Ordinal)) ignored.Add(record[2..]);
+            else if (record.StartsWith("? ", StringComparison.Ordinal)) untracked.Add(record[2..]);
+            else if (record.StartsWith("1 ", StringComparison.Ordinal) ||
+                     record.StartsWith("2 ", StringComparison.Ordinal) ||
+                     record.StartsWith("u ", StringComparison.Ordinal))
+            {
+                var path = RepoPaths.PathFromStatusRecord(record);
+                if (path.Length > 0) changed.Add(path);
+            }
+        }
+
+        return new WorktreeRemovalPreview
+        {
+            Path = worktree.Path,
+            Ok = true,
+            Exists = true,
+            IsLocked = worktree.IsLocked,
+            Branch = worktree.Branch ?? "",
+            ChangedPaths = changed,
+            UntrackedPaths = untracked,
+            IgnoredPaths = ignored,
+        };
+    }
+
+    /// <summary>
+    /// Whether the directory contains bytes Git's normal removal check deliberately omits.
+    /// Porcelain-v2's ignored records begin with <c>! </c> and are NUL-terminated, so paths
+    /// containing newlines cannot turn the probe into a false negative.
+    /// </summary>
+    private async Task<(bool Success, bool HasIgnored)> HasIgnoredContentAsync(
+        string worktreePath, CancellationToken ct)
+    {
+        GitResult result;
+        try
+        {
+            result = await git.TryRunAsync(
+                worktreePath, ct, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored")
+                .ConfigureAwait(false);
+        }
+        catch (GitException)
+        {
+            // A failed probe is not evidence of an empty directory. Keep ordinary removal
+            // fail-closed when Git cannot inspect the bytes it is about to delete.
+            return (false, false);
+        }
+
+        if (!result.Success) return (false, false);
+
+        var hasIgnored = result.StandardOutput
+            .Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .Any(record => record.StartsWith("! ", StringComparison.Ordinal));
+
+        return (true, hasIgnored);
     }
 
     /// <summary>Moves a worktree's directory, keeping its branch and its administrative link.</summary>
@@ -530,13 +732,17 @@ public sealed class WorktreeService(GitCli git, GitWriter writer)
         return name.Length > 0 ? name : trimmed;
     }
 
-    private static GitMutation Refused(string worktreePath, string operation, string reason) => new()
+    private static GitMutation Refused(
+        string worktreePath,
+        string operation,
+        string reason,
+        GitFailure failure = GitFailure.Unknown) => new()
     {
         Operation = operation,
         WorktreePath = worktreePath,
         CommandLine = "",
         ExitCode = -1,
-        Failure = GitFailure.Unknown,
+        Failure = failure,
         Detail = $"Could not {operation}: {reason}",
         Attempts = 0,
     };

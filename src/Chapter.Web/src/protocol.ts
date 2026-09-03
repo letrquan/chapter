@@ -31,9 +31,247 @@ export interface Worktree {
   prunableReason: string | null
   isLocked: boolean
   lockReason: string | null
+  upstream: string | null
+  ahead: number | null
+  behind: number | null
+  isUpstreamGone: boolean
   displayName: string
   shortHead: string
   isUsable: boolean
+}
+
+export type WorktreeAcceptStrategy = 'merge' | 'cherryPick'
+
+export interface AcceptWorkPayload {
+  sourceWorktreePath: string
+  targetWorktreePath: string
+  sourceBranch: string
+  strategy: WorktreeAcceptStrategy
+  integration: MutationPayload
+  removal?: MutationPayload
+  removeRequested: boolean
+  removed: boolean
+  ok: boolean
+  message: string
+}
+
+export interface WorktreeRejectionPath {
+  path: string
+  oldPath: string | null
+  kind: ChangeKind
+}
+
+export interface RejectWorkPreviewPayload {
+  sourceWorktreePath: string
+  targetWorktreePath: string
+  sourceBranch: string
+  sourceHead: string
+  baseBranch: string
+  baseHead: string
+  paths: WorktreeRejectionPath[]
+  ignoredPaths: string[]
+  commitCount: number
+  snapshotFingerprint: string
+  ok: boolean
+  message: string
+}
+
+export interface RejectWorkPayload {
+  sourceWorktreePath: string
+  targetWorktreePath: string
+  sourceBranch: string
+  baseBranch: string
+  baseHead: string
+  cleanup: MutationPayload
+  reset: MutationPayload
+  ignoredPaths: string[]
+  ok: boolean
+  verified: boolean
+  message: string
+}
+
+export interface CommitLogEntry {
+  sha: string
+  parents: string[]
+  authorName: string
+  authorEmail: string
+  authoredAt: string | null
+  committerName: string
+  committerEmail: string
+  committedAt: string | null
+  subject: string
+  body: string
+  decorations: string
+  isMerge: boolean
+  shortSha: string
+}
+
+export interface CommitLogPage {
+  worktreePath: string
+  commits: CommitLogEntry[]
+  anchor: string
+  offset: number
+  limit: number
+  hasMore: boolean
+}
+
+export type HistorySearchKind = 'message' | 'author' | 'path' | 'content'
+
+export interface CommitDetail {
+  worktreePath: string
+  commit: CommitLogEntry
+  parentSha: string
+  parentIndex: number
+  files: ChangedFile[]
+}
+
+export interface CommitFileDiff {
+  worktreePath: string
+  commitSha: string
+  parentSha: string
+  parentIndex: number
+  path: string
+  oldPath: string | null
+  baseText: string
+  commitText: string
+  language: string
+  isBinary: boolean
+}
+
+export interface FileHistoryPage {
+  worktreePath: string
+  path: string
+  commits: CommitLogEntry[]
+  anchor: string
+  offset: number
+  limit: number
+  hasMore: boolean
+}
+
+export interface BlameLine {
+  lineNumber: number
+  sha: string
+  authorName: string
+  authorEmail: string
+  authoredAt: string | null
+  subject: string
+  text: string
+  isBoundary: boolean
+  isUncommitted: boolean
+}
+
+export interface BlameResult {
+  worktreePath: string
+  path: string
+  revision: string
+  lines: BlameLine[]
+  isTruncated: boolean
+}
+
+/** A commit action selected from the history detail view. */
+export interface HistoryMutationRequest {
+  worktreePath: string
+  sha: string
+  /** Zero-based parent choice; used for merge commits. */
+  parentIndex?: number
+}
+
+export type RebaseAction = 'pick' | 'reword' | 'edit' | 'squash' | 'fixup' | 'drop'
+
+export interface RebaseTodoEntry {
+  sha: string
+  subject: string
+  parents: string[]
+  action: RebaseAction
+  message: string
+  shortSha: string
+}
+
+export interface RebasePlan {
+  worktreePath: string
+  /** Empty means the repository root. */
+  upstream: string
+  head: string
+  branch: string | null
+  /** Oldest first, matching Git's interactive todo order. */
+  entries: RebaseTodoEntry[]
+  isRoot: boolean
+  containsMerges: boolean
+  hasCommits: boolean
+  unavailableReason: string | null
+}
+
+export interface RebaseState {
+  worktreePath: string
+  operation: RepositoryOperation
+  branch: string | null
+  upstream: string | null
+  originalHead: string | null
+  currentCommit: string | null
+  currentSubject: string | null
+  currentAction: RebaseAction | null
+  step: number | null
+  totalSteps: number | null
+  remaining: RebaseTodoEntry[]
+  completed: RebaseTodoEntry[]
+  conflictedPaths: string[]
+  canContinue: boolean
+  canSkip: boolean
+  canAbort: boolean
+  isPaused: boolean
+}
+
+export type ConflictResolutionAction = 'ours' | 'theirs' | 'both' | 'manual'
+
+export interface ConflictRegion {
+  startLine: number
+  baseLine: number | null
+  separatorLine: number
+  endLine: number
+  oursText: string
+  baseText: string
+  theirsText: string
+}
+
+export interface ConflictFile {
+  path: string
+  language: string
+  baseText: string | null
+  oursText: string | null
+  theirsText: string | null
+  workingText: string
+  workingFileExists: boolean
+  isBinary: boolean
+  canRoundTrip: boolean
+  fingerprint: string
+  regions: ConflictRegion[]
+  hasBase: boolean
+  hasOurs: boolean
+  hasTheirs: boolean
+}
+
+export interface ConflictState {
+  worktreePath: string
+  operation: RepositoryOperation
+  branch: string | null
+  description: string
+  conflictedPaths: string[]
+  files: ConflictFile[]
+  isStashRestore: boolean
+  stashVerb: string | null
+  stashSha: string | null
+  originalHead: string | null
+  currentCommit: string | null
+  currentSubject: string | null
+  currentAction: RebaseAction | null
+  step: number | null
+  totalSteps: number | null
+  hasConflicts: boolean
+  isPaused: boolean
+  canContinue: boolean
+  canSkip: boolean
+  canAbort: boolean
+  canMarkResolved: boolean
 }
 
 /** One entry `git worktree prune` says it would forget. */
@@ -41,6 +279,66 @@ export interface PrunableEntry {
   /** The id under `.git/worktrees/` — the directory's original name, which is all git has left. */
   name: string
   reason: string
+}
+
+/**
+ * What a worktree directory holds, read before its removal is offered.
+ *
+ * The path lists are capped by the backend; the counts are the real totals, so the dialog
+ * can say "and 900 more" rather than either lying or pasting a `node_modules` into a modal.
+ */
+export interface WorktreeRemovalPreviewPayload {
+  path: string
+  ok: boolean
+  /** False for a prunable record: the directory is already gone, so there is nothing to lose. */
+  exists: boolean
+  isLocked: boolean
+  branch: string
+  changedPaths: string[]
+  untrackedPaths: string[]
+  ignoredPaths: string[]
+  changedCount: number
+  untrackedCount: number
+  ignoredCount: number
+  message: string
+}
+
+export interface RemotePrunePreviewPayload {
+  remote: string
+  ok: boolean
+  refs: string[]
+  message: string
+}
+
+export interface PushRefUpdatePayload {
+  /** `fromRef`/`toRef` rather than from/to — the C# record needs `From` for its factory. */
+  fromRef: string
+  toRef: string
+  isForced: boolean
+  isRejected: boolean
+  /** git reports a deleted ref with '-', which is a success rather than a refusal. */
+  isDeleted: boolean
+  summary: string
+  oldSha: string
+  newSha: string
+  /** Commits the remote has now and would not have afterwards. Forced updates only. */
+  dropped: string[]
+  /** The old tip is not an object this repository holds, so its commits cannot be listed. */
+  droppedUnknown: boolean
+}
+
+export interface PushPreviewPayload {
+  ok: boolean
+  updates: PushRefUpdatePayload[]
+  message: string
+}
+
+export interface BranchDeletionPreviewPayload {
+  branch: string
+  ok: boolean
+  tip: string
+  unreachableCommits: string[]
+  message: string
 }
 
 export type ChangeKind =
@@ -109,6 +407,50 @@ export interface WorktreeChanges {
   totalRemoved: number
 }
 
+/** One path that differs between two live worktree snapshots. */
+export interface WorktreeComparisonFile {
+  /** Right-hand path, except for a deletion where only the left path exists. */
+  path: string
+  /** Left-hand path for an exact rename. */
+  oldPath: string | null
+  leftPath: string
+  rightPath: string
+  kind: ChangeKind
+  linesAdded: number
+  linesRemoved: number
+  isBinary: boolean
+  leftBytes: number
+  rightBytes: number
+  leftExists: boolean
+  rightExists: boolean
+  fileName: string
+}
+
+/** A read-only comparison of two sibling worktrees. */
+export interface WorktreeComparison {
+  left: Worktree
+  right: Worktree
+  files: WorktreeComparisonFile[]
+  totalAdded: number
+  totalRemoved: number
+}
+
+/** Both live sides of a selected comparison file. */
+export interface WorktreeComparisonContent {
+  path: string
+  oldPath: string | null
+  leftPath: string
+  rightPath: string
+  leftText: string
+  rightText: string
+  language: string
+  leftExists: boolean
+  rightExists: boolean
+  isBinary: boolean
+  leftBytes: number
+  rightBytes: number
+}
+
 export interface DiffPayload {
   path: string
   oldPath: string | null
@@ -168,6 +510,7 @@ export interface RepositoryState {
 /** Why a mutation failed, in the terms the UI acts on. */
 export type GitFailure =
   | 'none'
+  | 'cancelled'
   | 'locked'
   | 'operationInProgress'
   | 'authenticationRequired'
@@ -310,7 +653,7 @@ export interface Branch {
    */
   checkedOutIn: string | null
   upstream: string | null
-  /** Null when there is no upstream; zero when it agrees exactly. From the last fetch. */
+  /** Null when there is no upstream; zero when it agrees exactly. From the last remote sync. */
   ahead: number | null
   behind: number | null
   /** Configured upstream that no longer exists — a deleted remote branch. */
@@ -321,6 +664,14 @@ export interface Branch {
   /** Another worktree holds it, so this one cannot check it out. */
   isCheckedOutElsewhere: boolean
 }
+
+export interface Remote {
+  name: string
+  fetchUrl: string
+  pushUrl: string
+}
+
+export type PullStrategy = 'merge' | 'rebase' | 'ff-only'
 
 /** What a switch should do about uncommitted work. */
 export type CheckoutStrategy = 'carry' | 'stashAndSwitch'
@@ -359,17 +710,89 @@ export interface RefsPayload {
   branches: Branch[]
   stashes: Stash[]
   tags: Tag[]
+  remotes: Remote[]
   /**
    * The repository's worktrees. Read here as well as by the rail on purpose: they are two
    * views refreshed at different moments, and sharing the rail's copy would leave the panel
    * listing worktrees that were removed through it seconds earlier.
    */
   worktrees: Worktree[]
+  /** Session metadata keyed by the normalized worktree path. */
+  agentSessions: Record<string, AgentSession[]>
   /** The branch this worktree is on, or null when HEAD is detached. */
   current: string | null
   /** False during a merge or rebase, where starting something new is illegal. */
   canSwitch: boolean
   blockedReason: string | null
+}
+
+export interface RemoteOperationStarted {
+  id: string
+  worktreePath: string
+  operation: string
+}
+
+export interface RemoteProgress {
+  id: string
+  worktreePath: string
+  operation: string
+  state: 'running' | 'completed' | 'failed' | 'cancelled'
+  phase: string
+  message: string
+  percent?: number
+  result?: MutationPayload
+}
+
+export interface CloneOperationStarted {
+  id: string
+  source: string
+  destination: string
+}
+
+export interface CloneProgress {
+  id: string
+  source: string
+  destination: string
+  state: 'running' | 'completed' | 'failed' | 'cancelled'
+  phase: string
+  message: string
+  percent?: number
+  result?: MutationPayload
+  repositoryPath?: string
+}
+
+export interface PullRequest {
+  number: number
+  url: string
+  title: string
+  body: string
+  state: string
+  isDraft: boolean
+  author: string
+  headRefName: string
+  baseRefName: string
+  headRepository: string
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface PullRequestListPayload {
+  worktreePath: string
+  pullRequests: PullRequest[]
+  success: boolean
+  detail: string
+}
+
+export interface PullRequestResultPayload {
+  worktreePath: string
+  operation: string
+  success: boolean
+  pullRequest: PullRequest | null
+  url: string
+  message: string
+  failure: GitFailure
+  commandLine: string
+  exitCode: number
 }
 
 /* --------------------------------------------------------------------------
@@ -524,6 +947,52 @@ export interface AppSettings {
   lastWorktree: Record<string, string>
 }
 
+export interface ReviewWatermark {
+  head: string
+  fingerprint: string
+  reviewedAt: string
+}
+
+export interface ReviewWatermarkPayload {
+  worktreePath: string
+  head: string
+  fingerprint: string
+  watermark: ReviewWatermark | null
+  hasUnreviewedChanges: boolean
+  success: boolean
+  detail: string
+}
+
+export type AgentSessionProvider = 'claude' | 'book' | 'codex'
+
+/** Metadata for one on-disk agent session; transcript text is never sent over the bridge. */
+export interface AgentSession {
+  provider: AgentSessionProvider
+  id: string
+  logPath: string
+  name: string | null
+  branch: string | null
+  startedAt: string | null
+  updatedAt: string | null
+  messageCount: number | null
+}
+
+export interface AgentSessionsPayload {
+  worktreePath: string
+  sessions: AgentSession[]
+  success: boolean
+  detail: string
+}
+
+export interface OpenAgentSessionPayload {
+  success: boolean
+  worktreePath: string
+  sessionId: string
+  provider: AgentSessionProvider | string
+  logPath: string | null
+  detail: string
+}
+
 /** Methods the backend exposes, with their parameter and return types. */
 export interface Api {
   ping: { params: void; result: string }
@@ -531,7 +1000,99 @@ export interface Api {
   addRepo: { params: { repoPath: string }; result: RepoInfo | null }
   removeRepo: { params: { repoPath: string }; result: boolean }
   getWorktrees: { params: { repoPath: string }; result: Worktree[] }
+  getHistory: {
+    params: { worktreePath: string; offset?: number; limit?: number; anchor?: string }
+    result: CommitLogPage
+  }
+  searchHistory: {
+    params: {
+      worktreePath: string
+      kind: HistorySearchKind
+      query: string
+      offset?: number
+      limit?: number
+      anchor?: string
+    }
+    result: CommitLogPage
+  }
+  getCommitDetail: {
+    params: { worktreePath: string; sha: string; parentIndex?: number }
+    result: CommitDetail
+  }
+  getCommitFileDiff: {
+    params: { worktreePath: string; sha: string; path: string; parentIndex?: number }
+    result: CommitFileDiff
+  }
+  getFileHistory: {
+    params: { worktreePath: string; path: string; offset?: number; limit?: number; anchor?: string }
+    result: FileHistoryPage
+  }
+  getBlame: {
+    params: { worktreePath: string; path: string; revision?: string }
+    result: BlameResult
+  }
+  cherryPick: { params: HistoryMutationRequest; result: MutationPayload }
+  revert: { params: HistoryMutationRequest; result: MutationPayload }
+  getRebasePlan: {
+    params: { worktreePath: string; upstream?: string }
+    result: RebasePlan
+  }
+  startRebase: {
+    params: {
+      worktreePath: string
+      upstream?: string
+      expectedHead: string
+      entries: Array<{ sha: string; action: RebaseAction; message?: string }>
+    }
+    result: MutationPayload
+  }
+  getRebaseState: { params: { worktreePath: string }; result: RebaseState }
+  continueRebase: {
+    params: { worktreePath: string; message?: string }
+    result: MutationPayload
+  }
+  skipRebase: { params: { worktreePath: string }; result: MutationPayload }
+  abortRebase: { params: { worktreePath: string }; result: MutationPayload }
+  getConflictState: { params: { worktreePath: string }; result: ConflictState }
+  getConflictFile: { params: { worktreePath: string; path: string }; result: ConflictFile | null }
+  resolveConflict: {
+    params: {
+      worktreePath: string
+      path: string
+      action: ConflictResolutionAction
+      manualText?: string
+      region?: number
+      fingerprint?: string
+    }
+    result: MutationPayload
+  }
+  markResolved: { params: { worktreePath: string; path?: string }; result: MutationPayload }
+  continueOperation: { params: { worktreePath: string; message?: string }; result: MutationPayload }
+  skipOperation: { params: { worktreePath: string }; result: MutationPayload }
+  abortOperation: { params: { worktreePath: string }; result: MutationPayload }
+  enableRerere: { params: { worktreePath: string }; result: MutationPayload }
+  applyRerere: { params: { worktreePath: string }; result: MutationPayload }
+  rerereStatus: { params: { worktreePath: string }; result: string[] }
+  forgetRerere: { params: { worktreePath: string; paths: string[] }; result: MutationPayload }
   getChanges: { params: { worktreePath: string; scope: DiffScope }; result: WorktreeChanges }
+  getWorktreeComparison: {
+    params: { leftWorktreePath: string; rightWorktreePath: string }
+    result: WorktreeComparison
+  }
+  /** Alias accepted by the bridge for clients that use the verb from the roadmap. */
+  compareWorktrees: {
+    params: { leftWorktreePath: string; rightWorktreePath: string }
+    result: WorktreeComparison
+  }
+  getWorktreeComparisonFile: {
+    params: {
+      leftWorktreePath: string
+      rightWorktreePath: string
+      leftPath: string
+      rightPath: string
+    }
+    result: WorktreeComparisonContent
+  }
   getDiff: {
     params: { worktreePath: string; path: string; scope: DiffScope; side?: DiffSide }
     result: DiffPayload
@@ -545,6 +1106,31 @@ export interface Api {
     result: AssetPayload
   }
   getSettings: { params: void; result: AppSettings }
+  getReviewWatermark: { params: { worktreePath: string }; result: ReviewWatermarkPayload }
+  markReviewWatermark: {
+    params: { worktreePath: string; expectedFingerprint: string }
+    result: ReviewWatermarkPayload
+  }
+  getAgentSessions: { params: { worktreePath: string }; result: AgentSessionsPayload }
+  getSessions: { params: { worktreePath: string }; result: AgentSessionsPayload }
+  openAgentSession: {
+    params: {
+      worktreePath: string
+      sessionId?: string
+      id?: string
+      provider?: string
+    }
+    result: OpenAgentSessionPayload
+  }
+  openSession: {
+    params: {
+      worktreePath: string
+      sessionId?: string
+      id?: string
+      provider?: string
+    }
+    result: OpenAgentSessionPayload
+  }
   /** Persists the preference and repaints the native window caption to match. */
   setTheme: { params: { theme: 'dark' | 'light' | 'system' }; result: boolean }
   pickFolder: { params: void; result: string | null }
@@ -626,6 +1212,11 @@ export interface Api {
   renameBranch: { params: { worktreePath: string; from: string; to: string }; result: MutationPayload }
   /** `force` passes `-D`; only send it after git has refused once and the user was told why. */
   deleteBranch: { params: { worktreePath: string; name: string; force?: boolean }; result: MutationPayload }
+  /** Commits that would be left with nothing pointing at them. Not the question `-d` asks. */
+  previewDeleteBranch: {
+    params: { worktreePath: string; name: string }
+    result: BranchDeletionPreviewPayload
+  }
   /** An empty `upstream` stops the branch tracking anything. */
   setUpstream: {
     params: { worktreePath: string; branch: string; upstream: string }
@@ -648,6 +1239,96 @@ export interface Api {
     result: MutationPayload
   }
   deleteTag: { params: { worktreePath: string; name: string }; result: MutationPayload }
+
+  getRemotes: { params: { worktreePath: string }; result: Remote[] }
+  addRemote: { params: { worktreePath: string; name: string; url: string }; result: MutationPayload }
+  renameRemote: { params: { worktreePath: string; from: string; to: string }; result: MutationPayload }
+  removeRemote: { params: { worktreePath: string; name: string }; result: MutationPayload }
+  pruneRemote: { params: { worktreePath: string; name: string }; result: MutationPayload }
+  /** Which tracking refs the server no longer has. Contacts the remote. */
+  previewPruneRemote: {
+    params: { worktreePath: string; name: string }
+    result: RemotePrunePreviewPayload
+  }
+  /** What a push would change on the server, asked of the server with the transfer left out. */
+  previewPush: {
+    params: { worktreePath: string; remote?: string; branch?: string; forceWithLease?: boolean }
+    result: PushPreviewPayload
+  }
+  fetch: { params: { worktreePath: string; remote?: string; prune?: boolean; all?: boolean }; result: RemoteOperationStarted }
+  pull: {
+    params: { worktreePath: string; strategy?: PullStrategy; remote?: string; branch?: string }
+    result: RemoteOperationStarted
+  }
+  push: {
+    params: {
+      worktreePath: string
+      remote?: string
+      branch?: string
+      forceWithLease?: boolean
+      setUpstream?: boolean
+    }
+    result: RemoteOperationStarted
+  }
+  pushTag: { params: { worktreePath: string; remote: string; tag: string }; result: RemoteOperationStarted }
+  cancelRemoteOperation: { params: { id: string }; result: boolean }
+
+  startClone: {
+    params: { source: string; destination: string; bare?: boolean; recursive?: boolean }
+    result: CloneOperationStarted
+  }
+  cloneRepository: {
+    params: { source: string; destination: string; bare?: boolean; recursive?: boolean }
+    result: CloneOperationStarted
+  }
+  cancelClone: { params: { id: string }; result: boolean }
+
+  listPullRequests: {
+    params: { worktreePath: string; limit?: number }
+    result: PullRequestListPayload
+  }
+  getPullRequests: {
+    params: { worktreePath: string; limit?: number }
+    result: PullRequestListPayload
+  }
+  viewPullRequest: {
+    params: { worktreePath: string; selector?: string }
+    result: PullRequestResultPayload
+  }
+  getPullRequest: {
+    params: { worktreePath: string; selector?: string }
+    result: PullRequestResultPayload
+  }
+  createPullRequest: {
+    params: {
+      worktreePath: string
+      title: string
+      body?: string
+      baseBranch?: string
+      headBranch?: string
+      draft?: boolean
+    }
+    result: PullRequestResultPayload
+  }
+  createPr: {
+    params: {
+      worktreePath: string
+      title: string
+      body?: string
+      baseBranch?: string
+      headBranch?: string
+      draft?: boolean
+    }
+    result: PullRequestResultPayload
+  }
+  checkoutPullRequest: {
+    params: { worktreePath: string; selector: string }
+    result: MutationPayload
+  }
+  checkoutPr: {
+    params: { worktreePath: string; selector: string }
+    result: MutationPayload
+  }
 
   /**
    * Worktree management. `worktreePath` says which repository — it is checked against the
@@ -677,9 +1358,73 @@ export interface Api {
   unlockWorktree: { params: { worktreePath: string; target: string }; result: MutationPayload }
   /** What pruning would forget, asked of git before the button rather than inferred from the list. */
   previewPrune: { params: { worktreePath: string }; result: { entries: PrunableEntry[] } }
+  /** What removing a worktree would delete, including the ignored files git's own check omits. */
+  previewRemoveWorktree: {
+    params: { worktreePath: string; target: string }
+    result: WorktreeRemovalPreviewPayload
+  }
   pruneWorktrees: { params: { worktreePath: string }; result: MutationPayload }
   /** Where a new worktree should go, following whatever layout the repository already uses. */
   suggestWorktreePath: { params: { worktreePath: string; name: string }; result: string }
+  acceptWorktree: {
+    params: {
+      worktreePath: string
+      target: string
+      strategy?: WorktreeAcceptStrategy
+      mode?: WorktreeAcceptStrategy
+      removeWorktree?: boolean
+      removeAfter?: boolean
+      noFastForward?: boolean
+      expectedSourceHead?: string
+      expectedTargetHead?: string
+    }
+    result: AcceptWorkPayload
+  }
+  /** Alias accepted by the bridge for clients that use the agent-oriented verb. */
+  acceptAgentWork: {
+    params: {
+      worktreePath: string
+      target: string
+      strategy?: WorktreeAcceptStrategy
+      mode?: WorktreeAcceptStrategy
+      removeWorktree?: boolean
+      removeAfter?: boolean
+      noFastForward?: boolean
+      expectedSourceHead?: string
+      expectedTargetHead?: string
+    }
+    result: AcceptWorkPayload
+  }
+  previewRejectWorktree: {
+    params: { worktreePath: string; target: string }
+    result: RejectWorkPreviewPayload
+  }
+  /** Alias accepted by the bridge for clients that use the agent-oriented verb. */
+  previewRejectAgentWork: {
+    params: { worktreePath: string; target: string }
+    result: RejectWorkPreviewPayload
+  }
+  rejectWorktree: {
+    params: {
+      worktreePath: string
+      target: string
+      expectedSourceHead?: string
+      expectedBaseHead?: string
+      expectedSnapshotFingerprint?: string
+    }
+    result: RejectWorkPayload
+  }
+  /** Alias accepted by the bridge for clients that use the agent-oriented verb. */
+  rejectAgentWork: {
+    params: {
+      worktreePath: string
+      target: string
+      expectedSourceHead?: string
+      expectedBaseHead?: string
+      expectedSnapshotFingerprint?: string
+    }
+    result: RejectWorkPayload
+  }
 
   getAiStatus: { params: void; result: AiAvailability }
   /** Stores the key, or forgets it when empty. The key is never returned. */
@@ -744,7 +1489,15 @@ export interface Events {
    * alongside one of ours carries the same flag.
    */
   filesChanged: { worktreePath: string; selfOriginated?: boolean }
+  /** HEAD, refs or repository operation state changed; refresh history while it is open. */
+  historyChanged: { worktreePath: string }
+  /** A rebase began, advanced, stopped or finished. */
+  rebaseChanged: { worktreePath: string }
+  /** A conflict file was written or marked resolved. */
+  conflictChanged: { worktreePath: string }
   worktreesChanged: { repoPath: string }
+  /** A cloned repository was registered and can be added to the rail. */
+  reposChanged: { repoPath: string }
   indexStatus: IndexStatus
   /** The undo stack for a worktree gained or lost an entry; re-label the action. */
   undoChanged: { worktreePath: string }
@@ -762,4 +1515,12 @@ export interface Events {
    * only way the page hears about the check the backend starts on its own at launch.
    */
   updateStatus: UpdateStatus
+  /** A line (or carriage-return update) from fetch, pull or push. */
+  remoteProgress: RemoteProgress
+  /** The final result of a remote operation. */
+  remoteFinished: RemoteProgress
+  /** A line (or carriage-return update) from a detached clone. */
+  cloneProgress: CloneProgress
+  /** The final result of a clone, including the registered repository path on success. */
+  cloneFinished: CloneProgress
 }

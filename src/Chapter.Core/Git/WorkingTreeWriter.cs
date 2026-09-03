@@ -41,6 +41,17 @@ public static class WorkingTreeWriter
     public const string TempSuffix = ".chapter-tmp";
 
     /// <summary>
+    /// The CLI used only to resolve a repository's lease key, for callers that have none.
+    ///
+    /// Shared rather than constructed per save, and overridable: the key comes from
+    /// <c>rev-parse --git-common-dir</c>, so a host running a git that is not on PATH must be
+    /// able to hand its own CLI in. Two callers resolving the key with different gits would
+    /// hash to two different lease files and the mutual exclusion would be silently absent —
+    /// the one failure mode a lock has no way of reporting.
+    /// </summary>
+    private static readonly GitCli DefaultGit = new();
+
+    /// <summary>
     /// Saves text to a file, preserving the format of whatever is already on disk.
     ///
     /// The format is read from the file rather than passed in by the caller, so it cannot
@@ -48,14 +59,45 @@ public static class WorkingTreeWriter
     /// front-end has by then normalised the text through Monaco.
     /// </summary>
     public static async Task<SaveResult> SaveAsync(
-        string worktreePath, string repoRelativePath, string text, CancellationToken ct = default)
+        string worktreePath, string repoRelativePath, string text, CancellationToken ct = default,
+        GitCli? git = null)
     {
-        var format = await ReadFormatAsync(worktreePath, repoRelativePath, ct).ConfigureAwait(false);
-        return await SaveAsync(worktreePath, repoRelativePath, text, format, ct).ConfigureAwait(false);
+        var lease = await RepositoryWriteLock.AcquireAsync(git ?? DefaultGit, worktreePath, ct)
+            .ConfigureAwait(false);
+        if (lease is null)
+            return SaveResult.Failed(repoRelativePath,
+                "another Chapter instance is writing this repository — try again");
+
+        using (lease)
+        {
+            var format = await ReadFormatAsync(worktreePath, repoRelativePath, ct).ConfigureAwait(false);
+            return await SaveAsyncUnderLease(worktreePath, repoRelativePath, text, format, ct)
+                .ConfigureAwait(false);
+        }
     }
 
     /// <summary>Saves text in an explicitly chosen format.</summary>
     public static async Task<SaveResult> SaveAsync(
+        string worktreePath, string repoRelativePath, string text, TextFormat format,
+        CancellationToken ct = default, GitCli? git = null)
+    {
+        var lease = await RepositoryWriteLock.AcquireAsync(git ?? DefaultGit, worktreePath, ct)
+            .ConfigureAwait(false);
+        if (lease is null)
+            return SaveResult.Failed(repoRelativePath,
+                "another Chapter instance is writing this repository — try again");
+
+        using (lease)
+            return await SaveAsyncUnderLease(worktreePath, repoRelativePath, text, format, ct)
+                .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes while the caller already holds the repository lease. This keeps a format read,
+    /// validation and atomic replacement in one critical section without attempting to take
+    /// the non-reentrant process semaphore a second time.
+    /// </summary>
+    internal static async Task<SaveResult> SaveAsyncUnderLease(
         string worktreePath, string repoRelativePath, string text, TextFormat format,
         CancellationToken ct = default)
     {
@@ -91,6 +133,61 @@ public static class WorkingTreeWriter
                 Success = true,
                 BytesWritten = bytes.Length,
                 Format = format,
+            };
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return SaveResult.Failed(repoRelativePath, "the file is read-only or access was denied");
+        }
+        catch (IOException ex)
+        {
+            return SaveResult.Failed(repoRelativePath, $"the file could not be written: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Saves raw bytes atomically. Conflict resolution can choose an ours/theirs blob that
+    /// is binary, where decoding it as text would corrupt the result.
+    /// </summary>
+    public static async Task<SaveResult> SaveBytesAsync(
+        string worktreePath, string repoRelativePath, byte[] bytes, CancellationToken ct = default,
+        GitCli? git = null)
+    {
+        var lease = await RepositoryWriteLock.AcquireAsync(git ?? DefaultGit, worktreePath, ct)
+            .ConfigureAwait(false);
+        if (lease is null)
+            return SaveResult.Failed(repoRelativePath,
+                "another Chapter instance is writing this repository — try again");
+
+        using (lease)
+            return await SaveBytesAsyncUnderLease(worktreePath, repoRelativePath, bytes, ct)
+                .ConfigureAwait(false);
+    }
+
+    /// <summary>Raw-byte counterpart for callers that already hold the repository lease.</summary>
+    internal static async Task<SaveResult> SaveBytesAsyncUnderLease(
+        string worktreePath, string repoRelativePath, byte[] bytes, CancellationToken ct = default)
+    {
+        if (RepoPaths.EntersGitDirectory(repoRelativePath))
+            return SaveResult.Failed(repoRelativePath, "that path is inside the git directory");
+
+        string absolute;
+        try { absolute = RepoPaths.Resolve(worktreePath, repoRelativePath); }
+        catch (ArgumentException)
+        {
+            return SaveResult.Failed(repoRelativePath, "that path is outside the worktree");
+        }
+
+        try
+        {
+            var directory = Path.GetDirectoryName(absolute);
+            if (directory is not null) Directory.CreateDirectory(directory);
+            await WriteAtomicallyAsync(absolute, bytes, ct).ConfigureAwait(false);
+            return new SaveResult
+            {
+                Path = repoRelativePath,
+                Success = true,
+                BytesWritten = bytes.Length,
             };
         }
         catch (UnauthorizedAccessException)

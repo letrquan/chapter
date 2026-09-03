@@ -69,4 +69,35 @@ public static class RepoPaths
     /// </summary>
     public static string[] SplitNul(string output) =>
         output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+
+    /// <summary>
+    /// The path out of one <c>status --porcelain=v2 -z</c> record.
+    ///
+    /// The field count differs per record kind and getting it wrong is quiet rather than
+    /// loud: a rename read at the ordinary offset yields <c>R100 NewName.cs</c> and an
+    /// unmerged one yields a pair of object ids, both of which look enough like a path to
+    /// end up in a dialog. Under <c>-z</c> a rename's original path is a separate record
+    /// rather than a tab-separated suffix, and it is dropped by the prefix filters that
+    /// select records in the first place.
+    /// </summary>
+    public static string PathFromStatusRecord(string record)
+    {
+        if (record.StartsWith("? ", StringComparison.Ordinal) ||
+            record.StartsWith("! ", StringComparison.Ordinal))
+            return record[2..];
+
+        var fields = record.StartsWith("2 ", StringComparison.Ordinal) ? 9
+            : record.StartsWith("u ", StringComparison.Ordinal) ? 10
+            : 8;
+
+        var position = 0;
+        for (var field = 0; field < fields; field++)
+        {
+            var space = record.IndexOf(' ', position);
+            if (space < 0) return "";
+            position = space + 1;
+        }
+
+        return position < record.Length ? record[position..] : "";
+    }
 }

@@ -247,6 +247,90 @@ public class WorktreeTests : IDisposable
         Assert.Null(branch.CheckedOutIn);
     }
 
+    /// <summary>
+    /// The removal dialog promises to name what it deletes, and git's own check cannot keep
+    /// that promise: <c>status</c> omits ignored files, so the one case where nothing refuses
+    /// is also the one where a .env disappears without being mentioned.
+    /// </summary>
+    [Fact]
+    public async Task Previews_the_ignored_and_untracked_content_a_removal_would_delete()
+    {
+        var root = await NewRepoAsync();
+        var workspace = await NewWorkspaceAsync(root);
+        var path = Sibling(root, "full");
+
+        await workspace.Worktrees.AddAsync(root, path, "full", createBranch: true);
+
+        await File.WriteAllTextAsync(Path.Combine(path, ".gitignore"), "secrets/\n");
+        await RunAsync(path, "add", "-A");
+        await RunAsync(path, "commit", "-m", "ignore secrets");
+
+        Directory.CreateDirectory(Path.Combine(path, "secrets"));
+        await File.WriteAllTextAsync(Path.Combine(path, "secrets", ".env"), "TOKEN=1\n");
+        await File.WriteAllTextAsync(Path.Combine(path, "notes.txt"), "scratch\n");
+        await File.WriteAllTextAsync(Path.Combine(path, "A.txt"), "edited\n");
+
+        // A rename as well as an edit, because porcelain-v2 puts the path in a different
+        // field per record kind: read at the ordinary offset a rename reports "R100 B.txt",
+        // and the dialog names a file that does not exist.
+        await File.WriteAllTextAsync(Path.Combine(path, "renamed-source.txt"), "moved\n");
+        await RunAsync(path, "add", "renamed-source.txt");
+        await RunAsync(path, "commit", "-m", "add a file to rename");
+        await RunAsync(path, "mv", "renamed-source.txt", "renamed-target.txt");
+
+        var preview = await workspace.Worktrees.PreviewRemoveAsync(root, path);
+
+        Assert.True(preview.Ok, preview.Message);
+        Assert.True(preview.Exists);
+        Assert.Equal("full", preview.Branch);
+        Assert.Contains("A.txt", preview.ChangedPaths);
+        Assert.Contains("renamed-target.txt", preview.ChangedPaths);
+        Assert.DoesNotContain(preview.ChangedPaths, entry => entry.Contains(' ', StringComparison.Ordinal));
+        Assert.Contains("notes.txt", preview.UntrackedPaths);
+        Assert.Contains(preview.IgnoredPaths, entry => entry.Contains("secrets", StringComparison.Ordinal));
+        Assert.True(preview.HasContent);
+
+        // Reading is not doing: everything is still there afterwards.
+        Assert.True(Directory.Exists(path));
+    }
+
+    [Fact]
+    public async Task Previews_a_clean_worktree_as_having_nothing_to_lose()
+    {
+        var root = await NewRepoAsync();
+        var workspace = await NewWorkspaceAsync(root);
+        var path = Sibling(root, "clean");
+
+        await workspace.Worktrees.AddAsync(root, path, "clean", createBranch: true);
+
+        var preview = await workspace.Worktrees.PreviewRemoveAsync(root, path);
+
+        Assert.True(preview.Ok, preview.Message);
+        Assert.True(preview.Exists);
+        Assert.False(preview.HasContent);
+    }
+
+    /// <summary>
+    /// A prunable record has no directory left to read. That is an answer, not a failure:
+    /// there are no bytes to lose, which is exactly what the dialog should say.
+    /// </summary>
+    [Fact]
+    public async Task Previews_a_worktree_whose_directory_is_already_gone()
+    {
+        var root = await NewRepoAsync();
+        var workspace = await NewWorkspaceAsync(root);
+        var path = Sibling(root, "vanished");
+
+        await workspace.Worktrees.AddAsync(root, path, "vanished", createBranch: true);
+        Directory.Delete(path, recursive: true);
+
+        var preview = await workspace.Worktrees.PreviewRemoveAsync(root, path);
+
+        Assert.True(preview.Ok);
+        Assert.False(preview.Exists);
+        Assert.False(preview.HasContent);
+    }
+
     [Fact]
     public async Task Removing_the_worktree_the_request_came_from_works_because_the_command_runs_elsewhere()
     {
@@ -284,6 +368,34 @@ public class WorktreeTests : IDisposable
         // Classified rather than left as Unknown, because this refusal is the one the UI
         // turns into the permanent-loss question.
         Assert.Equal(GitFailure.WouldLoseChanges, refused.Failure);
+
+        var forced = await workspace.Worktrees.RemoveAsync(root, path, force: true);
+
+        Assert.True(forced.Success, forced.Message);
+        Assert.False(Directory.Exists(path));
+    }
+
+    [Fact]
+    public async Task A_worktree_with_only_ignored_content_is_kept_until_the_removal_is_forced()
+    {
+        var root = await NewRepoAsync();
+
+        // Commit the ignore rule before creating the linked checkout, so the only content
+        // added in the linked worktree is the ignored file itself.
+        await File.WriteAllTextAsync(Path.Combine(root, ".gitignore"), "agent-output.txt\n");
+        await RunAsync(root, "add", ".gitignore");
+        await RunAsync(root, "commit", "-m", "ignore agent output");
+
+        var workspace = await NewWorkspaceAsync(root);
+        var path = Sibling(root, "ignored");
+        await workspace.Worktrees.AddAsync(root, path, "ignored", createBranch: true);
+        await File.WriteAllTextAsync(Path.Combine(path, "agent-output.txt"), "build output\n");
+
+        var refused = await workspace.Worktrees.RemoveAsync(root, path);
+
+        Assert.False(refused.Success);
+        Assert.Equal(GitFailure.WouldLoseChanges, refused.Failure);
+        Assert.True(Directory.Exists(path));
 
         var forced = await workspace.Worktrees.RemoveAsync(root, path, force: true);
 

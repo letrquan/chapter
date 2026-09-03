@@ -10,7 +10,7 @@ namespace Chapter.Core;
 /// they have, and what changed in each. Keeps every git decision in Core so the WPF host
 /// stays a thin shell around the WebView.
 /// </summary>
-public sealed class WorkspaceService
+public sealed class WorkspaceService : IDisposable
 {
     private readonly BaseBranchResolver _bases;
     private readonly DiffService _diff;
@@ -65,6 +65,33 @@ public sealed class WorkspaceService
 
     public TagService Tags { get; }
 
+    /// <summary>Configured remotes and network operations for the open repositories.</summary>
+    public RemoteService Remotes { get; }
+
+    /// <summary>GitHub pull requests through the locally installed <c>gh</c> CLI.</summary>
+    public PullRequestService PullRequests { get; }
+
+    /// <summary>Detached repository clones, reported through the bridge progress channel.</summary>
+    public CloneService Clones { get; }
+
+    /// <summary>Reads the commit history visible from each worktree.</summary>
+    public HistoryService History { get; }
+
+    /// <summary>Cherry-picks or reverts commits selected from the history view.</summary>
+    public HistoryMutationService HistoryMutations { get; }
+
+    /// <summary>Plans and runs guarded interactive rebases for the active worktree.</summary>
+    public RebaseService Rebases { get; }
+
+    /// <summary>
+    /// Reads and resolves conflicts for every operation Git can leave paused.
+    ///
+    /// This sits beside <see cref="Rebases"/> rather than inside it: merge, cherry-pick,
+    /// revert and stash restore all use the same conflict file surface, while rebase keeps
+    /// its specialised todo/message machinery behind the shared continuation methods.
+    /// </summary>
+    public ConflictService Conflicts { get; }
+
     /// <summary>
     /// Lists the repository's worktrees and edits the set.
     ///
@@ -73,6 +100,16 @@ public sealed class WorkspaceService
     /// worktree whichever one the user is looking at.
     /// </summary>
     public WorktreeService Worktrees { get; }
+
+    /// <summary>Reads two sibling worktrees as live, read-only snapshots.</summary>
+    public WorktreeComparisonService Comparisons { get; }
+
+    /// <summary>Integrates a linked agent worktree into the repository's main worktree.</summary>
+    public WorktreeAcceptanceService Acceptances { get; }
+
+    /// <summary>Rejects a linked agent worktree by resetting its branch to the repository base.</summary>
+    public WorktreeRejectionService Rejections { get; }
+
 
     /// <summary>
     /// The last repository-state reading per worktree, with the moment it was taken.
@@ -96,7 +133,7 @@ public sealed class WorkspaceService
     /// in-memory log rather than writing to the user's profile; the app passes a
     /// persistent one.
     /// </param>
-    public WorkspaceService(GitCli git, OperationLog? log = null)
+    public WorkspaceService(GitCli git, OperationLog? log = null, string ghPath = "gh")
     {
         Git = git;
         Log = log ?? new OperationLog();
@@ -132,7 +169,20 @@ public sealed class WorkspaceService
         Stashes = new StashService(git, Writer, Undo);
         Branches = new BranchService(git, Writer, Undo, Stashes);
         Tags = new TagService(git, Writer, Undo);
+        Remotes = new RemoteService(git, Writer);
+        PullRequests = new PullRequestService(git, Writer, ghPath);
+        Clones = new CloneService(git, Log);
+        History = new HistoryService(git);
+        HistoryMutations = new HistoryMutationService(Writer, Undo, History);
+        Rebases = new RebaseService(git, Writer, Undo);
+        Conflicts = new ConflictService(git, Writer, Staging, Rebases);
+        Conflicts.Changed = InvalidateChanges;
+        Stashes.ConflictStarted += (path, verb, sha) => Conflicts.NoteStashConflict(path, verb, sha);
+        Stashes.ConflictEnded += path => Conflicts.ClearStashConflict(path);
         Worktrees = new WorktreeService(git, Writer);
+        Comparisons = new WorktreeComparisonService(git);
+        Acceptances = new WorktreeAcceptanceService(git, Writer, Undo, Worktrees);
+        Rejections = new WorktreeRejectionService(git, Writer, Undo, Worktrees);
     }
 
     /// <summary>
@@ -511,6 +561,26 @@ public sealed class WorkspaceService
         if (!IsKnownWorktree(worktreePath))
             return Refuse(worktreePath, repoRelativePath, "that worktree is not open in this window");
 
+        // File saves do not invoke GitWriter, but they still race with another Chapter
+        // window (and with a simultaneous git command) on the same working tree. Keep the
+        // read of the format and the atomic replacement under the same repository lease.
+        var lease = await RepositoryWriteLock.AcquireAsync(Git, worktreePath, ct)
+            .ConfigureAwait(false);
+        if (lease is null)
+            return Refuse(worktreePath, repoRelativePath,
+                "another Chapter instance is writing this repository — try again");
+
+        using (lease)
+        {
+            return await SaveFileUnderLeaseAsync(worktreePath, repoRelativePath, text, ct)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private async Task<SaveResult> SaveFileUnderLeaseAsync(
+        string worktreePath, string repoRelativePath, string text, CancellationToken ct)
+    {
+
         var existing = await DiffService
             .GetWorkingContentAsync(worktreePath, repoRelativePath, ct)
             .ConfigureAwait(false);
@@ -530,7 +600,7 @@ public sealed class WorkspaceService
         using var scope = Writer.SelfWriteScope?.Invoke(worktreePath);
 
         var result = await WorkingTreeWriter
-            .SaveAsync(worktreePath, repoRelativePath, text, existing.Format, ct)
+            .SaveAsyncUnderLease(worktreePath, repoRelativePath, text, existing.Format, ct)
             .ConfigureAwait(false);
 
         if (result.Success) InvalidateChanges(worktreePath);
@@ -662,6 +732,17 @@ public sealed class WorkspaceService
             return new AssetPayload { Path = repoRelativePath, Reason = "could not be read" };
         }
     }
+
+    /// <summary>
+    /// Releases what the workspace owns rather than what a window does.
+    ///
+    /// Only the rebase service holds anything outside memory: a temporary directory per
+    /// paused sequence, for the editors Git is pointed at. That used to be torn down by
+    /// <c>BridgeDispatcher.Dispose</c>, which meant a window closing destroyed state its own
+    /// comment said the workspace still owned — and, in a host with two windows over one
+    /// workspace, took the second window's in-progress rebase messages with it.
+    /// </summary>
+    public void Dispose() => Rebases.Dispose();
 
     private async Task<FileContent> ContentAtScopeEndAsync(
         string worktreePath, string repoRelativePath, DiffScope scope, CancellationToken ct)

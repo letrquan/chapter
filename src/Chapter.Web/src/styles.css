@@ -377,6 +377,7 @@ body.resizing {
 
 .rail-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-1);
   border-top: 1px solid var(--border);
@@ -385,6 +386,21 @@ body.resizing {
 
 .rail-foot .btn {
   min-width: 0;
+}
+
+#add-repo {
+  flex: 1 1 150px;
+}
+
+#clone-repo {
+  color: var(--text-dim);
+}
+
+/* The utility buttons stay on one quiet row when the primary action wraps. */
+#update,
+#help,
+#theme-toggle {
+  flex: 0 0 var(--control-h);
 }
 
 .repo-group + .repo-group {
@@ -580,6 +596,34 @@ body.resizing {
   background: none;
   color: var(--text-faint);
   font-weight: 440;
+}
+
+/* The rail's second badge is deliberately quieter than the changed-file count: it reports
+   what the last remote sync observed, not live network state. Arrow direction is retained in text so
+   colour-blind users can distinguish work to publish from work to receive. */
+.wt-track {
+  flex: none;
+  display: inline-flex;
+  gap: 3px;
+  max-width: 62px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+.wt-track .ahead {
+  color: var(--add);
+}
+
+.wt-track .behind {
+  color: var(--del);
+}
+
+.wt-track.gone {
+  color: var(--mod);
 }
 
 .wt-key {
@@ -850,14 +894,23 @@ body.resizing {
   min-width: 12px;
 }
 
+.comparison-tab .tab-close {
+  opacity: 0;
+}
+
+.comparison-tab:hover .tab-close,
+.comparison-tab.active .tab-close {
+  opacity: 1;
+}
+
 /* ==========================================================================
    Changed-files panel
    ========================================================================== */
 
 .files {
   display: grid;
-  /* head, scope switch, base description, then the scrolling list */
-  grid-template-rows: auto auto auto 1fr;
+  /* head, operation banner, comparison bar, scope, base description, list, commit box */
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
 }
 
 /* Title, count, and the three actions. */
@@ -881,6 +934,53 @@ body.resizing {
 /* Baseline-aligned text beside centre-aligned icons needs the buttons put back. */
 .files-head .icon-btn {
   align-self: center;
+}
+
+/* A comparison is a temporary lens over the active worktree. */
+.comparison-bar {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--sp-2);
+  min-height: 32px;
+  padding: 4px var(--sp-3);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-subtle));
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+
+.comparison-bar[hidden] {
+  display: none;
+}
+
+.comparison-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.comparison-label.left {
+  margin-left: auto;
+}
+
+.comparison-label.right {
+  margin-right: auto;
+}
+
+.comparison-arrow {
+  flex: none;
+  color: var(--accent);
+  font-size: var(--fs-md);
+  line-height: 1;
+}
+
+.comparison-bar .icon-btn {
+  margin-left: 2px;
 }
 
 /* Which slice of the work is on screen. Sits directly above the list it filters. */
@@ -969,6 +1069,10 @@ body.resizing {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent-ring);
   color: var(--text);
+}
+
+.comparison-file-row .file-dirty {
+  visibility: hidden;
 }
 
 /* Status letter. Colour carries the meaning and the letter confirms it — a bare
@@ -1141,6 +1245,131 @@ body.resizing {
 .editor-host .monaco-editor {
   position: absolute;
   inset: 0;
+}
+
+/* The conflict surface is four independent Monaco instances. Give each one its own
+   containing block and a real fraction of the editor height; without this, Monaco's
+   absolute layout makes all four panes measure the outer host and paint over each other. */
+.merge-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--border);
+}
+
+.merge-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+
+.merge-pane-head {
+  display: flex;
+  align-items: center;
+  flex: 0 0 28px;
+  min-width: 0;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.merge-pane-editor {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 120px;
+  overflow: hidden;
+}
+
+.merge-pane-editor .monaco-editor {
+  position: absolute;
+  inset: 0;
+}
+
+.merge-result .merge-pane-head {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.merge-result .merge-pane-editor {
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
+}
+
+.conflict-region-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 3px 8px;
+  border-left: 2px solid var(--warning, #d89b3c);
+  background: color-mix(in srgb, var(--warning, #d89b3c) 12%, var(--bg-raised));
+  color: var(--text-faint);
+  font: var(--fs-micro) var(--font-ui);
+}
+
+.conflict-region-actions span {
+  margin-right: 2px;
+  font-weight: 650;
+}
+
+.conflict-region-action {
+  min-height: 20px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  color: var(--text-dim);
+  background: var(--bg-input);
+  font-size: var(--fs-micro);
+}
+
+.conflict-region-action:hover {
+  color: var(--text);
+  border-color: var(--accent-ring);
+  background: var(--bg-hover);
+}
+
+/* At the app's minimum window width two columns remain readable. Below that threshold,
+   stack the panes so each editor keeps enough horizontal room for paths and code. */
+@media (max-width: 820px) {
+  .merge-editor {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(4, minmax(160px, 1fr));
+    overflow-y: auto;
+  }
+}
+
+/* Blame markers are intentionally quiet: the commit and author live in the hover, while
+   the gutter only answers which lines have attribution available. */
+.chapter-blame-glyph {
+  display: grid;
+  place-items: center;
+}
+
+.chapter-blame-glyph::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.chapter-blame-uncommitted::before {
+  background: var(--mod);
+}
+
+.chapter-blame-boundary::before {
+  background: var(--text-faint);
 }
 
 /* ==========================================================================
@@ -1841,6 +2070,49 @@ kbd {
   opacity: 0.62;
 }
 
+.tab-history,
+.crumb-history {
+  flex: none;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.crumb-history {
+  margin-left: var(--sp-2);
+}
+
+.crumb-history-back {
+  margin-left: var(--sp-2);
+  color: var(--accent);
+  font-size: var(--fs-micro);
+}
+
+.crumb-history-back:hover {
+  text-decoration: underline;
+}
+
+.crumb-comparison {
+  min-width: 0;
+  margin-left: var(--sp-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: var(--fs-micro);
+}
+
+.wt.comparison-side:not(.active) {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* A network transfer is busy too, but its Cancel control is the one action that must remain
+   reachable. The progress strip is the only exception to the modal pointer shield. */
+.refs-backdrop.busy .refs-progress,
+.refs-backdrop.busy .refs-progress * {
+  pointer-events: auto;
+}
+
 .refs-head {
   display: flex;
   align-items: baseline;
@@ -2034,6 +2306,26 @@ kbd {
   color: var(--mod);
 }
 
+/* A local agent transcript was found for this worktree. It is an informational link, not
+   a dirty-state warning: the log may describe work that is already committed. */
+.refs-badge.session {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+.refs-remote-url,
+.refs-remote-push {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.refs-remote-push {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Held open for the selected row so the keyboard path shows what it can do, and on
    hover for the pointer one. Otherwise the actions would be the loudest thing in a
    list whose job is to be read. */
@@ -2053,6 +2345,32 @@ kbd {
   height: 22px;
 }
 
+.refs-actions .accept-worktree {
+  color: var(--add);
+}
+
+.refs-actions .accept-worktree:hover {
+  background: color-mix(in srgb, var(--add) 12%, transparent);
+  color: var(--add);
+}
+
+.refs-actions .reject-worktree {
+  color: var(--danger, #c65b5b);
+}
+
+.refs-actions .reject-worktree:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger, #c65b5b);
+}
+
+.wt-review {
+  color: var(--accent, #d59a4a);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
 .refs-empty {
   padding: 22px;
   text-align: center;
@@ -2065,6 +2383,66 @@ kbd {
   gap: 6px;
   padding: 9px 16px;
   border-top: 1px solid var(--border);
+}
+
+.refs-progress {
+  margin: 10px 16px 0;
+  padding: 9px 10px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-subtle));
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
+}
+
+.refs-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.refs-progress-title {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.refs-progress-phase {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.refs-progress-head .btn {
+  width: auto;
+  margin-left: auto;
+  flex: none;
+}
+
+.refs-progress-bar {
+  height: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-active);
+}
+
+.refs-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--medium);
+}
+
+.refs-progress-message {
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: var(--fs-micro);
 }
 
 .refs-hint {
@@ -2112,6 +2490,769 @@ kbd {
 
 .refs-prompt-input:focus {
   border-color: var(--accent-ring);
+}
+
+/* ==========================================================================
+   Commit history
+
+   A timeline rather than another changed-files mode. The list stays compact enough to
+   scan fifty commits at once; selecting one opens its message and metadata underneath
+   without navigating the editor away from the file under review.
+   ========================================================================== */
+
+.history-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: none;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 7vh;
+  background: color-mix(in srgb, var(--bg-shell) 55%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.history-backdrop.open {
+  display: flex;
+}
+
+.history {
+  width: min(880px, 92vw);
+  max-height: 86vh;
+  display: grid;
+  grid-template-rows: auto auto minmax(160px, 1fr) auto auto auto;
+  border-radius: var(--r-xl);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-popover);
+  overflow: hidden;
+  animation: palette-in 140ms var(--ease);
+}
+
+/* A paused rebase remains outside the history overlay so closing that overlay cannot hide
+   the only route out of a conflict or edit stop. */
+#operation-banner {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--warning, #d89b3c) 10%, var(--bg-subtle));
+}
+
+#operation-banner[hidden] {
+  display: none;
+}
+
+.operation-banner-main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.operation-icon {
+  flex: 0 0 auto;
+  color: var(--warning, #d89b3c);
+}
+
+.operation-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  gap: 1px;
+}
+
+.operation-copy strong {
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.operation-copy span,
+.operation-conflicts {
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.operation-banner-main input,
+.operation-banner-main textarea {
+  flex: 1 1 160px;
+  min-width: 100px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  resize: vertical;
+}
+
+.operation-conflicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: var(--sp-1) 0 0 24px;
+}
+
+.operation-conflicts code {
+  color: var(--danger, #c65b5b);
+  font-family: var(--font-mono);
+}
+
+.conflict-files {
+  display: grid;
+  gap: 5px;
+}
+
+.conflict-file-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.conflict-file-path {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--danger, #c65b5b);
+  font: var(--fs-micro) var(--font-mono);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.conflict-file-path:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.conflict-file-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.btn.tiny {
+  min-height: 22px;
+  padding: 2px 7px;
+  font-size: var(--fs-micro);
+}
+
+.operation-note {
+  display: block;
+  margin: var(--sp-1) 0 0 24px;
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.rebase-planner {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.rebase-planner[hidden] {
+  display: none;
+}
+
+.rebase-head,
+.rebase-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.rebase-title {
+  color: var(--text);
+  font-size: var(--fs-base);
+  font-weight: 650;
+}
+
+.rebase-title code,
+.rebase-commit code {
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+
+.rebase-subtitle,
+.rebase-foot-note {
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.rebase-warning {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid color-mix(in srgb, var(--warning, #d89b3c) 45%, transparent);
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+}
+
+.rebase-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: var(--sp-3) 0;
+}
+
+.rebase-row {
+  display: grid;
+  grid-template-columns: 42px 92px minmax(150px, 1fr) minmax(160px, 1.2fr);
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+}
+
+.rebase-row.dropped {
+  opacity: .55;
+}
+
+.rebase-order {
+  display: flex;
+  gap: 2px;
+}
+
+.rebase-order .icon-btn {
+  width: 20px;
+  height: 22px;
+  padding: 0;
+  font-size: var(--fs-sm);
+}
+
+.rebase-action {
+  min-width: 0;
+  padding: 5px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-micro);
+}
+
+.rebase-commit {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.rebase-commit span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.rebase-message {
+  min-width: 0;
+  resize: vertical;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-micro);
+}
+
+.rebase-foot {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+
+/* File history removes the search row, so the list moves up into the shorter grid rather
+   than leaving an empty track between the heading and the timeline. */
+.history.file-history {
+  grid-template-rows: auto minmax(160px, 1fr) auto auto auto;
+}
+
+.history-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.history-title {
+  color: var(--text);
+  font-size: var(--fs-base);
+  font-weight: 650;
+}
+
+.history-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+
+.history-search {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) auto auto;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.history-search[hidden],
+.history-search-clear[hidden] {
+  display: none;
+}
+
+.history-search-submit {
+  color: var(--text-faint);
+}
+
+.history-search-input {
+  min-width: 0;
+  padding: 6px 2px;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-base);
+  outline: none;
+}
+
+.history-search-input:focus {
+  border-color: var(--accent-ring);
+}
+
+.history-search-input::placeholder {
+  color: var(--text-faint);
+}
+
+.history-search-modes {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+}
+
+.history-search-modes button {
+  padding: 4px 7px;
+  border-radius: calc(var(--r-sm) - 2px);
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.history-search-modes button:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.history-search-modes button.on {
+  color: var(--accent-fill-text);
+  background: var(--accent-fill);
+}
+
+.history-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-2);
+  --history-graph-width: 24px;
+}
+
+.history-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--history-graph-width) 58px minmax(0, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 50px;
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
+  text-align: left;
+  color: var(--text-dim);
+}
+
+.history-row:hover {
+  background: var(--bg-hover);
+}
+
+.history-row.selected {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
+  color: var(--text);
+}
+
+.history-graph {
+  width: var(--history-graph-width);
+  height: 50px;
+  overflow: hidden;
+  align-self: stretch;
+}
+
+.history-graph-svg {
+  display: block;
+  overflow: visible;
+  max-width: none;
+}
+
+.history-graph-lines path {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.history-graph-node {
+  fill: var(--bg-raised);
+  stroke: var(--text-faint);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.history-graph-node.merge {
+  fill: var(--accent);
+  stroke: var(--bg-raised);
+}
+
+.history-sha,
+.history-detail code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.history-sha {
+  color: var(--text-faint);
+}
+
+.history-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.history-subject,
+.history-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-subject {
+  color: var(--text);
+  font-size: var(--fs-base);
+}
+
+.history-meta {
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.history-merge {
+  color: var(--rename);
+}
+
+.history-decoration {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-size: var(--fs-micro);
+}
+
+.history-detail {
+  max-height: 30vh;
+  overflow-y: auto;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+  user-select: text;
+}
+
+.history-detail[hidden] {
+  display: none;
+}
+
+.history-detail-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.history-detail-head strong {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-base);
+  font-weight: 650;
+}
+
+.history-detail-head code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+.history-detail-line {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.history-detail-line > :first-child {
+  color: var(--text-faint);
+}
+
+.history-parent-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: var(--sp-3);
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+
+.history-parent-picker .btn {
+  width: auto;
+  color: var(--text-dim);
+}
+
+.history-parent-picker .btn.on {
+  color: var(--accent-fill-text);
+  background: var(--accent-fill);
+}
+
+.history-body {
+  margin: var(--sp-3) 0 0;
+  white-space: pre-wrap;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-sm);
+  user-select: text;
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.history-actions .btn {
+  width: auto;
+}
+
+.history-actions .btn svg {
+  margin-right: 4px;
+}
+
+.history-action-pending {
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.history-action-status {
+  margin-top: var(--sp-2);
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-micro);
+}
+
+.history-action-status.success {
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.history-action-status.error {
+  color: var(--del);
+  background: color-mix(in srgb, var(--del) 10%, transparent);
+}
+
+.history-no-body {
+  margin-top: var(--sp-3);
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+
+.history-files-head,
+.history-files-loading,
+.history-no-files {
+  margin-top: var(--sp-3);
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.history-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--sp-2);
+}
+
+.history-file {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 3px var(--sp-2);
+  border-radius: var(--r-xs);
+  text-align: left;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.history-file:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.history-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-file-old {
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.history-file-delta {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+}
+
+.history-foot {
+  display: flex;
+  align-items: center;
+  min-height: 43px;
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+
+.history-foot .btn {
+  width: auto;
+}
+
+.history-foot .btn svg {
+  transform: rotate(90deg);
+}
+
+.history-loading,
+.history-end {
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.history-empty {
+  padding: var(--sp-6);
+  text-align: center;
+  color: var(--text-faint);
+  font-size: var(--fs-base);
+}
+
+.history-hint {
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+}
+
+.history-hint kbd {
+  margin-right: 3px;
+}
+
+@media (max-width: 620px) {
+  .comparison-bar {
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 3px;
+  }
+
+  .comparison-label.left,
+  .comparison-label.right {
+    max-width: calc(50% - 22px);
+    margin: 0;
+  }
+
+  .operation-banner-main {
+    flex-wrap: wrap;
+  }
+
+  .operation-banner-main input {
+    order: 3;
+    flex-basis: 100%;
+  }
+
+  .rebase-row {
+    grid-template-columns: 38px 84px minmax(0, 1fr);
+  }
+
+  .rebase-message {
+    grid-column: 1 / -1;
+  }
+
+  .rebase-foot {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .history {
+    width: 96vw;
+    max-height: 90vh;
+  }
+
+  .history-row {
+    grid-template-columns: var(--history-graph-width) 48px minmax(0, 1fr);
+  }
+
+  .history-decoration {
+    display: none;
+  }
+
+  .history-search {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .history-search-modes {
+    grid-column: 1 / -1;
+    justify-content: stretch;
+  }
+
+  .history-search-modes button {
+    flex: 1;
+  }
 }
 
 /* ==========================================================================
@@ -2879,12 +4020,204 @@ kbd {
   color: var(--text-faint);
 }
 
-.confirm-recovery.permanent {
+/* ===========================================================================
+   Clone dialog
+
+   Cloning has no worktree to anchor it to, so it gets a small standalone surface. The
+   progress view stays in the same card after submission; closing it while git is alive
+   would hide the only cancellation control.
+   =========================================================================== */
+
+.clone-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 11vh;
+  background: color-mix(in srgb, var(--bg-shell) 58%, transparent);
+  backdrop-filter: blur(3px);
+  animation: confirm-fade 120ms var(--ease);
+}
+
+.clone-dialog {
+  width: min(560px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xl);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-popover);
+  animation: confirm-rise 140ms var(--ease);
+}
+
+.clone-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.clone-title {
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.clone-subtitle,
+.clone-label,
+.clone-progress-meta,
+.clone-hint {
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+
+.clone-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.clone-label {
+  color: var(--text-dim);
+}
+
+.clone-input-row {
+  display: flex;
+  gap: var(--sp-1);
+}
+
+.clone-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.clone-input:focus {
+  border-color: var(--accent-ring);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.clone-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.clone-options input {
+  accent-color: var(--accent-fill);
+  vertical-align: -1px;
+}
+
+.clone-error {
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--del) 10%, var(--bg-input));
+  color: var(--del);
+  font-size: var(--fs-sm);
+}
+
+.clone-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.clone-progress-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.clone-progress-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+
+.clone-progress-bar {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--bg-input);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.clone-progress-bar span {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  background: var(--accent-fill);
+  transition: width var(--medium);
+}
+
+.clone-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+}
+
+.clone-progress-message {
+  min-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.clone-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.clone-actions .btn {
+  width: auto;
+  min-width: 92px;
+}
+
+.clone-hint {
+  text-align: right;
+}
+
+.clone-hint kbd {
+  margin-right: 3px;
+}
+
+.confirm-recovery.local {
+  color: var(--text-faint);
+}
+
+.confirm-recovery.permanent,
+.confirm-recovery.mixed {
   padding: 7px 9px;
   border-radius: var(--r-sm);
   color: var(--del);
   background: color-mix(in srgb, var(--del) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--del) 32%, transparent);
+}
+
+.confirm-recovery.remote {
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+  color: var(--mod);
+  background: color-mix(in srgb, var(--mod) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mod) 32%, transparent);
 }
 
 .confirm-actions {

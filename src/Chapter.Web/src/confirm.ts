@@ -31,13 +31,15 @@ export interface ConfirmOptions {
    * path to the button. Discarding unstaged work is the permanent case that people
    * routinely assume is not, which is the whole reason this parameter exists.
    *
-   * `harmless` is the third honest answer and was added for pruning worktrees: neither of
+   * `mixed` is the honest answer when a reversible integration is paired with a permanent
+   * directory deletion, as accepting an agent worktree can be. `harmless` is the third
+   * honest answer and was added for pruning worktrees: neither of
    * the others is true of it. Nothing can be undone, because nothing was destroyed — the
    * directories were already gone and only git's record of them is removed. Saying
    * "permanent" there would put the app's loudest warning on its least consequential
    * action, and a warning that cries wolf is worse than none.
    */
-  recovery: 'undoable' | 'permanent' | 'harmless'
+  recovery: 'undoable' | 'mixed' | 'permanent' | 'harmless' | 'remote' | 'local'
   /** Extra detail — a file list, a branch name. Rendered smaller, below the body. */
   detail?: string[]
 }
@@ -45,8 +47,11 @@ export interface ConfirmOptions {
 /** The sentence each kind of recoverability gets. Stated on every dialog, never implied. */
 const RECOVERY: Record<ConfirmOptions['recovery'], string> = {
   undoable: 'This can be undone afterwards.',
+  mixed: 'The integration can be undone; removing the worktree permanently deletes files that are not committed.',
   permanent: 'This cannot be undone — the content is not in git, so there is nothing to recover it from.',
   harmless: 'Nothing you can lose is removed — only git’s record of directories that are already gone.',
+  remote: 'This can rewrite shared remote history. Recovery depends on another clone or the remote provider’s retention.',
+  local: 'Only local remote configuration and tracking refs change. The server and your commits are untouched.',
 }
 
 let active: (() => void) | null = null
@@ -65,7 +70,7 @@ export function confirm(options: ConfirmOptions): Promise<boolean> {
     const host = document.createElement('div')
     host.className = 'confirm-backdrop'
 
-    const permanent = options.recovery === 'permanent'
+    const permanent = options.recovery === 'permanent' || options.recovery === 'remote' || options.recovery === 'mixed'
 
     const detail =
       options.detail && options.detail.length > 0
