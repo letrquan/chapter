@@ -31,6 +31,31 @@ export const icons = {
 
   refresh: svg('<path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2v3.5H10"/>'),
 
+  search: svg('<circle cx="7" cy="7" r="4.25"/><path d="m10.25 10.25 3.25 3.25"/>'),
+
+  /** A clock face: the commit timeline, distinct from the refresh action beside it. */
+  history: svg('<circle cx="8" cy="8" r="5.75"/><path d="M8 4.5v3.8l2.5 1.5"/>'),
+
+  /** Line attribution: three source lines, each anchored to its commit marker. */
+  blame: svg('<circle cx="3" cy="4" r="1"/><circle cx="3" cy="8" r="1"/><circle cx="3" cy="12" r="1"/>' +
+    '<path d="M6 4h7M6 8h7M6 12h7"/>'),
+
+  /** Cloud endpoint: the configured remote rather than a local branch. */
+  cloud: svg('<path d="M5.2 12.5h6.1a2.7 2.7 0 0 0 .2-5.4A3.8 3.8 0 0 0 4.2 6a3.3 3.3 0 0 0 1 6.5Z"/>'),
+
+  /** Upload: a push to the selected remote. */
+  upload: svg('<path d="M8 13.5v-7"/><path d="m5 9.5 3-3.25 3 3.25"/><path d="M3 3.5h10"/>'),
+
+  /** Upload with a marked shaft, used for the explicitly history-rewriting action. */
+  uploadForce: svg('<path d="M8 13.5v-7"/><path d="m5 9.5 3-3.25 3 3.25"/><path d="M3 3.5h10"/><path d="M8 1.25v1"/>'),
+
+  /** Pull: an arrow arriving from above. */
+  pull: svg('<path d="M8 2.5v7"/><path d="m5 6.5 3 3.25 3-3.25"/><path d="M3 12.5h10"/>'),
+
+  /** Pull request: a branch merge mark inside a cloud-shaped badge. */
+  pullRequest: svg('<path d="M3 3.5h10M3 12.5h10"/><circle cx="5" cy="3.5" r="1.5"/>' +
+    '<circle cx="11" cy="12.5" r="1.5"/><path d="M5 5v3a3 3 0 0 0 3 3h1"/>', 13),
+
   folder: svg('<path d="M1.75 3.75A.75.75 0 0 1 2.5 3h3.3a1 1 0 0 1 .78.37l.84 1.05a1 1 0 0 0 .78.38h5.3a.75.75 0 0 1 .75.75v6.7a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75Z"/>', 32),
 
   sun: svg('<circle cx="8" cy="8" r="3"/><path d="M8 1v1.5M8 13.5V15M15 8h-1.5M2.5 8H1M12.95 3.05l-1.06 1.06M4.11 11.89l-1.06 1.06M12.95 12.95l-1.06-1.06M4.11 4.11 3.05 3.05"/>'),
@@ -38,6 +63,10 @@ export const icons = {
   moon: svg('<path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"/>'),
 
   diff: svg('<path d="M4 2.5v11M12 2.5v11"/><path d="M1.5 6h5M9.5 10h5"/>', 13),
+
+  /** Two panes with opposing arrows: compare one live worktree with another. */
+  compare: svg('<path d="M2.5 5h8"/><path d="m8 2.5 2.5 2.5L8 7.5"/>' +
+    '<path d="M13.5 11h-8"/><path d="m8 8.5-2.5 2.5L8 13.5"/>', 13),
 
   /** Stage: a plus, matching the mental model of adding to the commit. */
   stage: svg('<path d="M8 4v8M4 8h8"/>', 13),
@@ -48,6 +77,10 @@ export const icons = {
   /** Discard: a bin, because it destroys rather than moves. */
   discard: svg('<path d="M2.5 4h11M6 4V2.75A.75.75 0 0 1 6.75 2h2.5a.75.75 0 0 1 .75.75V4"/>' +
     '<path d="M4 4l.6 8.3a1 1 0 0 0 1 .95h4.8a1 1 0 0 0 1-.95L12 4"/>', 13),
+
+  /** Reset: a branch arrow returning to a baseline, distinct from deleting a directory. */
+  reject: svg('<path d="M13 5.5H6.25a3.25 3.25 0 1 0 0 6.5H9"/>' +
+    '<path d="m6.5 3-3.25 2.5L6.5 8"/>', 13),
 
   commit: svg('<circle cx="8" cy="8" r="2.75"/><path d="M1.5 8h3.75M10.75 8h3.75"/>'),
 

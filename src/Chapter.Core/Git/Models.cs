@@ -29,6 +29,12 @@ public sealed record Worktree
     public bool IsLocked { get; init; }
     public string? LockReason { get; init; }
 
+    /// <summary>Tracking information for this worktree's current branch.</summary>
+    public string? Upstream { get; init; }
+    public int? Ahead { get; init; }
+    public int? Behind { get; init; }
+    public bool IsUpstreamGone { get; init; }
+
     /// <summary>Abbreviated <see cref="Head"/>, for a list that shows where each one sits.</summary>
     public string ShortHead => Head.Length >= 7 ? Head[..7] : Head;
 

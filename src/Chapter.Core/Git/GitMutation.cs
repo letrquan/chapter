@@ -44,6 +44,9 @@ public enum GitFailure
     /// <summary>Nothing to do: nothing staged, already up to date, no such change.</summary>
     NothingToDo,
 
+    /// <summary>A user cancelled a long-running operation before git finished.</summary>
+    Cancelled,
+
     /// <summary>A ref, path or object the command names does not exist.</summary>
     NotFound,
 
@@ -99,14 +102,14 @@ public sealed record GitMutation
             // "succeeded" would leave the user believing their changes came across when
             // they are sitting in the stash. If the app worked something out worth saying,
             // saying it beats the generic sentence.
-            if (!string.IsNullOrWhiteSpace(Detail)) return Detail!;
+            if (!string.IsNullOrWhiteSpace(Detail)) return GitCli.RedactText(Detail!);
             if (Success) return $"{Operation} succeeded";
 
             var firstLine = FirstMeaningfulLine(StandardError);
-            if (firstLine is not null) return firstLine;
+            if (firstLine is not null) return GitCli.RedactText(firstLine);
 
             var firstOut = FirstMeaningfulLine(StandardOutput);
-            if (firstOut is not null) return firstOut;
+            if (firstOut is not null) return GitCli.RedactText(firstOut);
 
             return $"{Operation} failed with exit code {ExitCode}";
         }
@@ -282,7 +285,17 @@ public static class GitFailureClassifier
         Has(text, "unknown revision or path not in the working tree") ||
         Has(text, "not a valid object name") ||
         Has(text, "no such branch") ||
-        Has(text, "couldn't find remote ref");
+        Has(text, "couldn't find remote ref") ||
+        // Process-start failures are returned through the same result channel as Git's
+        // command failures. Treat a missing executable as a named absence rather than an
+        // opaque unknown error so clone/gh callers can offer an actionable install hint.
+        //
+        // Anchored on the wrapper GitCli puts around them rather than on the operating
+        // system's words. "No such file or directory" is also how git ends an ordinary
+        // working-tree failure — `error: unable to unlink old 'x.cs': No such file or
+        // directory` — and matching that loosely relabelled it "git could not find what
+        // was named", which offers the wrong recovery for a checkout that half-ran.
+        Has(text, "failed to start '");
 
     private static bool Has(string text, string needle) =>
         text.Contains(needle, StringComparison.OrdinalIgnoreCase);
@@ -302,6 +315,7 @@ public static class GitFailureClassifier
         GitFailure.CheckedOutElsewhere => $"Could not {operation}: that branch is checked out in another worktree",
         GitFailure.Rejected => $"Could not {operation}: the remote rejected the update",
         GitFailure.NothingToDo => $"Nothing to {operation}",
+        GitFailure.Cancelled => $"{operation} cancelled",
         GitFailure.NotFound => $"Could not {operation}: git could not find what was named",
         _ => $"Could not {operation}",
     };

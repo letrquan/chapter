@@ -11,6 +11,21 @@ namespace Chapter.Core.Tests;
 public class FailureClassificationTests
 {
     [Theory]
+    [InlineData("https://user:secret@example.com/repo.git", "https://***@example.com/repo.git")]
+    [InlineData("git:secret@example.com:team/repo.git", "***@example.com:team/repo.git")]
+    [InlineData("https://user:p@ss@example.com/repo.git", "https://***@example.com/repo.git")]
+    public void Redacts_embedded_credentials_from_git_text(string input, string expected) =>
+        Assert.Equal(expected, GitCli.RedactText(input));
+
+    [Fact]
+    public void Leaves_email_addresses_and_urls_without_userinfo_alone()
+    {
+        const string text = "contact test@example.com at https://example.com/repo.git";
+
+        Assert.Equal(text, GitCli.RedactText(text));
+    }
+
+    [Theory]
     [InlineData("fatal: Unable to create '/repo/.git/index.lock': File exists.", GitFailure.Locked)]
     [InlineData("Another git process seems to be running in this repository", GitFailure.Locked)]
     [InlineData("error: cannot lock ref 'refs/heads/main'", GitFailure.Locked)]
@@ -24,6 +39,15 @@ public class FailureClassificationTests
     [InlineData("nothing to commit, working tree clean", GitFailure.NothingToDo)]
     [InlineData("error: failed to push some refs to 'origin'", GitFailure.Rejected)]
     [InlineData("error: pathspec 'nope.cs' did not match any file(s) known to git", GitFailure.NotFound)]
+    // A missing executable is a named absence; the wrapper is what makes it safe to match.
+    [InlineData("Failed to start 'gh': The system cannot find the file specified",
+        GitFailure.NotFound)]
+    [InlineData("Failed to start 'git': No such file or directory", GitFailure.NotFound)]
+    // And an ordinary working-tree failure that merely ends in the same words is not one.
+    // Matching them loosely offered "git could not find what was named" for a checkout that
+    // half-ran, which points the user at the wrong recovery.
+    [InlineData("error: unable to unlink old 'src/x.cs': No such file or directory",
+        GitFailure.Unknown)]
     [InlineData("fatal: something nobody has seen before", GitFailure.Unknown)]
     public void Classifies_the_failures_the_ui_has_to_act_on(string stderr, GitFailure expected) =>
         Assert.Equal(expected, GitFailureClassifier.Classify(stderr));

@@ -36,6 +36,7 @@ public partial class MainWindow : Window
         {
             FolderPicker = PickFolderAsync,
             ThemeChanged = ApplyWindowChrome,
+            OpenExternalPath = OpenExternalFile,
             Updater = new VelopackUpdater(),
         };
         _dispatcher.EventRaised += OnBackendEvent;
@@ -44,7 +45,15 @@ public partial class MainWindow : Window
         RegisterCommandLineRepo();
 
         Loaded += OnLoaded;
-        Closed += (_, _) => _dispatcher.Dispose();
+        // Both, and in this order: the dispatcher stops raising events at a closing window
+        // first, then the workspace releases what it owns. The workspace is disposed here
+        // because this is where it was created — the dispatcher is a consumer of it, not its
+        // owner, and used to reach in and dispose a piece of it.
+        Closed += (_, _) =>
+        {
+            _dispatcher.Dispose();
+            workspace.Dispose();
+        };
     }
 
     /// <summary>
@@ -277,6 +286,24 @@ public partial class MainWindow : Window
         catch
         {
             // No handler registered for the scheme. Silently ignoring beats crashing.
+        }
+    }
+
+    /// <summary>
+    /// Opens a discovered agent transcript through the shell association. The dispatcher
+    /// validates that the path belongs to a known agent store before this callback runs.
+    /// </summary>
+    private static bool OpenExternalFile(string path)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+            return process is not null;
+        }
+        catch
+        {
+            return false;
         }
     }
 

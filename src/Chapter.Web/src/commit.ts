@@ -1196,7 +1196,8 @@ async function submit(): Promise<void> {
   }
 
   // Amending a commit that is already pushed rewrites history somebody else may have.
-  // Not detectable without a remote — Phase 5 — so the warning is about the local fact.
+  // The remote may already contain this commit, but the local amend warning is useful even
+  // when no remote is configured: replacing a commit changes the branch tip immediately.
   if (draft.amend) {
     const ok = await confirm({
       title: 'Amend the previous commit?',

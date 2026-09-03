@@ -44,6 +44,19 @@ public class RefParsingTests
     }
 
     [Fact]
+    public void Represents_a_branch_at_zero_distance_from_its_upstream_explicitly()
+    {
+        var output = Row(
+            "refs/heads/main", "aaa1111", "origin/main", "", "", "*", "", "in sync");
+
+        var branch = Assert.Single(BranchService.Parse(output));
+
+        Assert.Equal(0, branch.Ahead);
+        Assert.Equal(0, branch.Behind);
+        Assert.False(branch.IsUpstreamGone);
+    }
+
+    [Fact]
     public void Separates_local_from_remote_by_namespace_rather_than_by_the_slash()
     {
         // The trap this guards: a local branch may legitimately be called `feature/login`,

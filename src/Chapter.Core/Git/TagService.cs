@@ -31,10 +31,8 @@ public sealed record Tag
 /// <summary>
 /// Lists and edits tags.
 ///
-/// Pushing them is deliberately absent: a tag reaches a remote through <c>git push</c>,
-/// which is Phase 5's subject and blocked on the credential environment
-/// (<see cref="GitCli.AllowCredentialPrompts"/> is still false, so a push that needed
-/// credentials would fail opaquely rather than asking). Everything here is local.
+/// Tag creation and deletion stay local. Pushing is owned by <see cref="RemoteService"/>,
+/// where it shares the credential-aware, detached progress path with branch pushes.
 /// </summary>
 public sealed class TagService(GitCli git, GitWriter writer, UndoService undo)
 {

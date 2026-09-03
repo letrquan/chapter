@@ -207,6 +207,39 @@ public sealed class StagingService(GitCli git, GitWriter writer)
 
         var operation = Describe("discard", [.. paths, .. untracked]);
 
+        // Deleting untracked files is a working-tree write too. Keep it and the optional
+        // index restore under one repository lease so a second Chapter window cannot stage
+        // or replace a path between the two halves of this composite operation.
+        var lease = await RepositoryWriteLock.AcquireAsync(git, worktreePath, ct)
+            .ConfigureAwait(false);
+        if (lease is null)
+            return new GitMutation
+            {
+                Operation = operation,
+                WorktreePath = worktreePath,
+                CommandLine = "",
+                ExitCode = -1,
+                Failure = GitFailure.Locked,
+                Detail = "Could not discard: another Chapter instance is writing this repository — try again",
+                Attempts = 0,
+            };
+
+        using (lease)
+            return await DiscardUnderLeaseAsync(
+                lease, worktreePath, operation, paths, target, untracked, ct)
+                .ConfigureAwait(false);
+    }
+
+    private async Task<GitMutation> DiscardUnderLeaseAsync(
+        RepositoryWriteLease lease,
+        string worktreePath,
+        string operation,
+        IReadOnlyList<string> paths,
+        DiscardTarget target,
+        IReadOnlyList<string> untracked,
+        CancellationToken ct)
+    {
+
         // Deleting untracked files first. If the restore below fails there is no partial
         // state to explain — the two halves are independent — and doing it in this order
         // keeps the reported failure the interesting one.
@@ -246,7 +279,8 @@ public sealed class StagingService(GitCli git, GitWriter writer)
         }
 
         var mutation = await writer
-            .RunAsync(worktreePath, operation, WriteKind.WorkingTree, ct, args)
+            .RunUnderLeaseAsync(lease, worktreePath, operation, WriteKind.WorkingTree,
+                GitIntent.Write, ct, args)
             .ConfigureAwait(false);
 
         if (mutation.Success && removed.Failed.Count > 0)

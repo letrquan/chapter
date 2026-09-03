@@ -53,6 +53,16 @@ public sealed class StashService(GitCli git, GitWriter writer, UndoService undo)
     /// </summary>
     private const char SeparatorChar = '\u001f';
 
+    /// <summary>
+    /// Raised when <c>stash apply</c> or <c>stash pop</c> leaves unmerged index entries.
+    /// Git has no marker for this operation, so the conflict service keeps a small
+    /// per-worktree memory of which stash must be described in the banner.
+    /// </summary>
+    public event Action<string, string, string>? ConflictStarted;
+
+    /// <summary>Raised when a remembered stash restore completes or is no longer relevant.</summary>
+    public event Action<string>? ConflictEnded;
+
     public async Task<IReadOnlyList<Stash>> ListAsync(string worktreePath, CancellationToken ct = default)
     {
         var result = await git.TryRunAsync(
@@ -292,6 +302,17 @@ public sealed class StashService(GitCli git, GitWriter writer, UndoService undo)
         var mutation = await writer
             .RunAsync(worktreePath, DescribeEntry(verb, entry), kind, ct, ["stash", verb, target])
             .ConfigureAwait(false);
+
+        if (mutation.Failure is GitFailure.Conflict)
+        {
+            ConflictStarted?.Invoke(worktreePath, verb, entry.Sha);
+        }
+        else if (mutation.Success)
+        {
+            // A clean apply/pop never leaves an operation for the conflict banner. Clearing
+            // here also forgets a stale in-memory marker after a retry succeeds.
+            ConflictEnded?.Invoke(worktreePath);
+        }
 
         // A dropped stash is unreferenced rather than gone, and `stash store` re-references
         // it by sha. Recorded only for drop: apply changes nothing about the list, and pop

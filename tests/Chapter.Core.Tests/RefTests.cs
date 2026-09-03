@@ -534,6 +534,74 @@ public class RefTests : IDisposable
         Assert.Equal(GitFailure.CheckedOutElsewhere, mutation.Failure);
     }
 
+    /// <summary>
+    /// The preview and git's <c>-d</c> measure different things, and this is the case where
+    /// they agree: work that exists on one branch and nowhere else.
+    /// </summary>
+    [Fact]
+    public async Task Previews_the_commits_a_delete_would_leave_unreachable()
+    {
+        var root = await NewRepoAsync();
+        var workspace = await NewWorkspaceAsync(root);
+
+        await RunAsync(root, "switch", "-c", "wip");
+        await File.WriteAllTextAsync(Path.Combine(root, "B.txt"), "unmerged work\n");
+        await RunAsync(root, "add", "-A");
+        await RunAsync(root, "commit", "-m", "work nobody else has");
+        await RunAsync(root, "switch", "main");
+
+        var preview = await workspace.Branches.PreviewDeleteAsync(root, "wip");
+
+        Assert.True(preview.Ok, preview.Message);
+        Assert.NotEqual("", preview.Tip);
+        Assert.Contains("work nobody else has", Assert.Single(preview.UnreachableCommits));
+
+        // Asking changed nothing: the branch is still there to be deleted or kept.
+        var branches = await workspace.Branches.ListAsync(root);
+        Assert.Contains(branches, branch => branch.Name == "wip");
+    }
+
+    /// <summary>
+    /// And this is the case where they disagree, which is why the preview is used to word the
+    /// second dialog rather than to decide whether to show it. Git refuses <c>-d</c> for a
+    /// branch that is not merged into HEAD; the preview correctly reports that nothing becomes
+    /// unreachable, because another branch points at the same commits.
+    /// </summary>
+    [Fact]
+    public async Task Reports_nothing_unreachable_when_another_branch_holds_the_same_commits()
+    {
+        var root = await NewRepoAsync();
+        var workspace = await NewWorkspaceAsync(root);
+
+        await RunAsync(root, "switch", "-c", "wip");
+        await File.WriteAllTextAsync(Path.Combine(root, "B.txt"), "shared work\n");
+        await RunAsync(root, "add", "-A");
+        await RunAsync(root, "commit", "-m", "also on keep");
+        await RunAsync(root, "branch", "keep");
+        await RunAsync(root, "switch", "main");
+
+        var preview = await workspace.Branches.PreviewDeleteAsync(root, "wip");
+
+        Assert.True(preview.Ok, preview.Message);
+        Assert.Empty(preview.UnreachableCommits);
+
+        // Git still refuses, because its question is about merge status rather than reachability.
+        var refused = await workspace.Branches.DeleteAsync(root, "wip");
+        Assert.False(refused.Success);
+    }
+
+    [Fact]
+    public async Task Refuses_to_preview_a_branch_that_does_not_exist()
+    {
+        var root = await NewRepoAsync();
+        var workspace = await NewWorkspaceAsync(root);
+
+        var preview = await workspace.Branches.PreviewDeleteAsync(root, "never-existed");
+
+        Assert.False(preview.Ok);
+        Assert.Contains("does not resolve", preview.Message);
+    }
+
     [Fact]
     public async Task Deleting_an_unmerged_branch_is_refused_until_it_is_forced()
     {

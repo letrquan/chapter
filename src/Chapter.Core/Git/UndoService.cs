@@ -168,6 +168,87 @@ public sealed class UndoService(GitCli git, GitWriter writer)
     {
         var newHead = await CaptureHeadAsync(worktreePath, ct).ConfigureAwait(false);
 
+        RecordCommit(worktreePath, previousHead, newHead, "commit", subject);
+    }
+
+    /// <summary>
+    /// Records a commit made by an operation whose label is not simply <c>commit</c> —
+    /// cherry-pick and revert are the two examples. The point is only added when HEAD
+    /// actually moved; a command that reports success without creating a commit must not
+    /// leave an undo button that would reset an unrelated tip.
+    /// </summary>
+    public async Task<bool> RecordCommitOperationAsync(
+        string worktreePath,
+        string? previousHead,
+        string operation,
+        string subject,
+        CancellationToken ct = default)
+    {
+        var newHead = await CaptureHeadAsync(worktreePath, ct).ConfigureAwait(false);
+        if (newHead is null || string.Equals(previousHead, newHead, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        RecordCommit(worktreePath, previousHead, newHead, operation, subject);
+        return true;
+    }
+
+    /// <summary>
+    /// Records the inverse of a history rewrite such as an interactive rebase.
+    ///
+    /// Unlike a normal commit undo, restoring a rewritten history also has to restore the
+    /// old tree. A soft reset would leave the rebased tree in the index and working tree,
+    /// which is not the state the user asked to get back to. `--keep` makes that exact reset
+    /// conditional: if somebody has edited an overlapping file since the rebase, Git refuses
+    /// rather than throwing that work away. The rewritten commits remain reachable through
+    /// the reflog, so this is an undoable history move rather than a permanent discard.
+    /// </summary>
+    public async Task<bool> RecordHistoryRewriteAsync(
+        string worktreePath,
+        string? previousHead,
+        string operation,
+        string subject,
+        CancellationToken ct = default,
+        bool isDestructive = false,
+        string? warning = null,
+        string? expectedNewHead = null)
+    {
+        var newHead = await CaptureHeadAsync(worktreePath, ct).ConfigureAwait(false);
+        if (previousHead is null || newHead is null ||
+            string.Equals(previousHead, newHead, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (expectedNewHead is not null &&
+            !string.Equals(expectedNewHead, newHead, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var label = string.IsNullOrWhiteSpace(subject) ||
+                    string.Equals(subject, operation, StringComparison.OrdinalIgnoreCase)
+            ? operation
+            : $"{operation} \"{Shorten(subject)}\"";
+
+        Record(new UndoPoint
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Label = label,
+            WorktreePath = worktreePath,
+            Timestamp = DateTimeOffset.Now,
+            InverseCommand = ["reset", "--keep", previousHead],
+            HeadSha = previousHead,
+            ExpectedHeadSha = newHead,
+            IsDestructive = isDestructive,
+            Warning = warning ?? "This restores the pre-rebase history and tree. Git refuses if somebody has changed an overlapping file; the rewritten commits remain in the reflog.",
+        });
+        return true;
+    }
+
+    private void RecordCommit(
+        string worktreePath,
+        string? previousHead,
+        string? newHead,
+        string operation,
+        string subject)
+    {
+
         // A root commit has no previous tip to reset to, so the inverse is to remove the
         // branch's tip altogether. That leaves the index and working tree untouched, which
         // is the same guarantee reset --soft gives everywhere else.
@@ -178,7 +259,7 @@ public sealed class UndoService(GitCli git, GitWriter writer)
         Record(new UndoPoint
         {
             Id = Guid.NewGuid().ToString("N"),
-            Label = $"commit \"{Shorten(subject)}\"",
+            Label = $"{operation} \"{Shorten(subject)}\"",
             WorktreePath = worktreePath,
             Timestamp = DateTimeOffset.Now,
             InverseCommand = inverse,

@@ -14,9 +14,29 @@ something, one keystroke opens the file at that exact line in Rider or VS Code.
 
 Review is the point, but you can also act on what you find: stage by file, hunk or line,
 discard, edit, and commit — without leaving the window or losing which worktree you were in.
-Claude will write the commit message if you would rather not. Branches, stashes and tags are
-one keystroke away, and the branch list knows which worktree already has a branch open, so
-switching to it takes you there rather than failing.
+Claude will write the commit message if you would rather not. Branches, stashes, tags and
+remotes are one keystroke away: fetch, pull and push keep their progress in the window, and
+the branch list knows which worktree already has a branch open, so switching to it takes you
+there rather than failing. Each worktree also has a paginated commit history (`Ctrl` `H`),
+with a branch graph, full messages and merge-parent metadata; click a changed file to inspect
+that commit in the same Monaco diff view without losing the worktree you were reviewing. The
+history detail can also cherry-pick or revert the selected commit, including a chosen merge
+parent; `C` and `R` are contextual shortcuts while that timeline is focused. Clean mutations
+are undoable, while a conflict stays visible for you to resolve. The open file has its own
+history action, which follows renames, and Code mode can add line-level blame markers with
+commit details on hover.
+
+**Compare agents side by side.** From the worktree refs panel, choose another usable
+worktree to open a read-only comparison of their live snapshots. Tracked and non-ignored
+untracked files appear in the shared list, ignored output stays out, exact renames show both
+paths, and selecting a text file opens both checkouts in Monaco without changing the active
+worktree or its tabs. Close the comparison to return exactly where you were.
+
+**Session links stay local.** When Claude Code, Book or Codex has a session log on disk for a
+worktree, the refs panel marks it with an `agent` badge and offers an external-link action.
+Chapter reads only bounded metadata prefixes to match the worktree; transcript text never
+crosses the bridge. Opening a result performs a fresh provider/id lookup and lets the host
+open only a validated `.jsonl` file inside the known local session store.
 
 It is a review cockpit, not an IDE.
 
@@ -57,7 +77,7 @@ replace and does not update itself. The help panel says so rather than claiming 
 | .NET SDK | 10.0+ |
 | Node.js | 20+ (build only — the app does not run Node) |
 | WebView2 runtime | Ships with Windows 11; otherwise install the Evergreen runtime |
-| git | On `PATH` |
+| git | On `PATH`; Git Credential Manager is used when the configured remote needs sign-in |
 | A model | Optional — only for generated commit messages. A Claude key, an OpenAI-compatible key, or a local endpoint such as Ollama, which needs no key at all. |
 
 ## Build
@@ -160,9 +180,9 @@ tests/Chapter.Core.Tests/
 **WebView2, not Electron.** The UI is HTML and Monaco, but there is no Node and no bundled
 Chromium: WebView2 runs in-process with .NET on the Edge runtime already present on
 Windows. The entire backend — git, indexing, watching — is C#. The front-end is served
-from a folder mapped onto a virtual host, so there is no local web server, and the page
-itself reaches the network never: the one feature that leaves the machine is commit-message
-generation, and the request is made by the backend.
+from a folder mapped onto a virtual host, so there is no local web server, and the page itself
+never makes a network request. Git remote sync and commit-message generation both run in the
+backend; remote sign-in is handed to Git Credential Manager rather than a terminal prompt.
 
 **Monaco does the diffing.** The backend supplies the base side (`git show <sha>:<path>`)
 and the working side; Monaco's diff editor renders it. That is also why every language
@@ -233,6 +253,19 @@ Because an agent may be writing to the same worktree, a hunk selection carries a
 of the diff it was made against. If the file changed in between, the stage is refused rather
 than applied to whatever hunk now sits at that index.
 
+**Two Chapter windows do not race each other.** Every mutation takes a short repository-wide
+lease, held from re-reading the repository's state to classifying git's result, and linked
+worktrees resolve to their common git directory so they all queue on the same one. Git's
+`index.lock` is not enough on its own: it serializes one low-level write, while the failure
+that matters here is two windows each reading the same branch and stash list and then acting
+on a snapshot the other has already invalidated — both writes succeed individually. The lease
+is a byte-range lock rather than a lock file, so the operating system releases it if Chapter
+is killed and there is no stale marker for the next window to break. Waiting is capped at two
+seconds and then refused by name — *another Chapter instance is writing this repository* —
+because a button that silently blocks looks exactly like one that has hung. It says nothing
+about other programs: against Rider or a terminal, the fingerprint checks above are still what
+stands between an agent's write and yours.
+
 **The stash is repository-wide, and this app is the one that notices.** `refs/stash` lives in
 the *common* git directory, so every worktree in a repository shares a single stash list: an
 entry made in one appears in all of them, and `stash@{0}` renumbers whenever any of them
@@ -266,6 +299,63 @@ branch another worktree holds is refused by git — `fatal: 'x' is already used 
 worktree instead. It has its own failure kind (`CheckedOutElsewhere`) rather than being filed
 under "would lose changes", because nothing is at risk and there is nothing to force.
 
+**Remote sync stays in the window.** The Remotes section lists each configured fetch and push
+endpoint, with embedded URL credentials hidden. Fetch, pull and push return immediately and
+stream Git's transfer output into a progress strip; a slow operation can be cancelled without
+extending the bridge timeout. Pull asks whether to merge, rebase or require fast-forward, and
+the force action always uses `--force-with-lease`. Ahead/behind badges are refreshed after a
+successful sync and describe the local tracking refs, not an unqueried live server state.
+
+**Pull requests are `gh`, kept at arm's length.** The refs panel's sixth section lists a
+repository's pull requests, opens the selected one, checks it out, and creates one from the
+current branch. Chapter does not embed a GitHub client: GitHub CLI already owns
+authentication, host selection and GitHub Enterprise, so the app supplies non-interactive
+arguments and reads the bounded JSON it asked for. Checking a PR out is routed through the
+same writer as every other mutation, because it moves the local worktree. If `gh` is missing
+or signed out, the section repeats what the CLI said rather than showing an empty list.
+
+**Cloning is a first-class operation, not a prerequisite.** `Ctrl` `Shift` `O` clones a
+repository into a folder you choose and streams the transfer into the same progress strip as
+a fetch. The destination is checked before Git starts — it must not already exist and its
+parent must — because the alternative is a partial directory that neither the app nor the
+user asked for. The finished clone joins the workspace without disturbing the worktree you
+were reviewing.
+
+**History can follow a file.** The clock in the editor header opens a newest-first timeline for
+the active path and uses `git log --follow`, so a rename does not cut the story in half. Selecting
+a row still opens the commit's parent comparison; when the file had an earlier name, the
+historical diff opens that name rather than pretending the current path existed then. The
+timeline is anchored to the `HEAD` it first read, so loading older pages remains stable while
+an agent commits new work.
+
+**History is searchable without leaving the timeline.** `Ctrl` `F` focuses the history search
+field, where Message, Author, Path and Content modes keep the query's meaning explicit. Message
+and author searches are literal and case-insensitive; path search accepts a repository-relative
+substring; Content uses Git's `-S` pickaxe to find commits that add or remove exact text. Search
+results use the same commit detail, historical diff, cherry-pick and revert actions as the
+unfiltered timeline. A mutation checks that the full selected object is still reachable from
+the current worktree `HEAD`; this prevents a stale overlay from applying an unrelated object.
+For a merge, the parent picker is zero-based in the UI and becomes Git's one-based `-m` value.
+Git's `--no-edit` keeps the operation inside the desktop app. If Git reports a conflict,
+Chapter does not abort it: the operation marker and conflicted files remain available in the
+shared resolution banner.
+
+**Blame stays attached to the code you can see.** In Code mode, the attribution button places a
+small gutter marker on each line; hovering it shows the short commit id, author and subject.
+New or otherwise uncommitted lines use a separate marker. Blame is offered for the working-tree
+scopes only, and a dirty Monaco buffer has to be saved first: Git can attribute the bytes on disk,
+not text that exists only in the editor. A new untracked text file is shown as entirely
+uncommitted; binary files remain reviewable but have no line attribution.
+
+**Conflicts stay in the window.** Merge, interactive rebase, cherry-pick, revert, mailbox
+apply and stash-apply conflicts use one persistent banner. Open a file to see Base, Ours,
+Theirs and an editable Result; choose a side, combine both sides, or resolve an individual
+marker region. Saving a manual result is fingerprint-checked against the bytes that were
+shown, and Stage resolved then enables the operation-specific Continue, Skip or Abort action.
+Binary conflicts offer exact Ours/Theirs byte choices, while a stash restore keeps its stash
+entry until you explicitly continue. `git rerere` can be enabled, applied, inspected and
+forgotten from the bridge.
+
 **Worktrees are managed from the same panel, and never from inside themselves.** Adding,
 removing, moving, locking and pruning all run in the repository's *main* worktree, whichever
 one you are looking at. `git worktree remove` is perfectly willing to delete the directory the
@@ -281,6 +371,25 @@ A new worktree's path is suggested by following whatever layout the repository a
 suggests a sibling, because a worktree nested inside the main one appears in that worktree's
 own `git status` as an untracked directory. In this app that means the repository you are
 reviewing grows a phantom change that is really another agent's entire checkout.
+
+**Accepting agent work is a guarded handoff.** In the Worktrees section, select a linked
+worktree and press `A` (or its check button) to bring its committed branch into the repository's
+main worktree. The source must have no tracked, staged, or ordinary untracked changes and must
+not have an operation in progress. Merge keeps the agent boundary with `--no-ff`; cherry-pick
+applies the source's linear commits in order, while a source merge history must be accepted with
+merge mode. A conflict is left active in the main worktree's existing resolution banner rather
+than being discarded. A clean integration records one undo point, including a multi-commit
+cherry-pick. Optional source-directory removal is a separate guarded step: the branch, tip and
+working-tree status are rechecked, ignored files block removal too, and a source that gained new
+work is left in place. If cleanup is refused, the integration still stands and can be undone.
+
+**Rejecting agent work is explicit and permanent.** In the Worktrees section, press `R` (or
+the reset button) to preview the branch's commits, tracked changes, ordinary untracked files
+and ignored files. The confirmation lists those paths before it deletes them and resets the
+branch to its merge base with the repository default branch. The committed tip can be restored
+with Undo; files that were never committed cannot. The preview's source/base heads and content
+fingerprint are checked again immediately before reset, so a concurrent agent write leaves the
+new work in place and refuses the operation.
 
 **Nothing destructive happens without saying whether it can be undone.** One confirmation
 dialog covers all of it, and it states recoverability every time rather than relying on a
@@ -306,6 +415,26 @@ gone — and shows `git worktree prune --dry-run` in the dialog, since it is the
 here that names nothing on screen. A *locked* worktree is asked about separately rather than
 overridden: git wants `--force --force` there and the app passes one, because a lock is
 somebody's explicit instruction and the way past it is to unlock it.
+
+**Every destructive dialog says what it is about to touch, and asks git rather than guessing.**
+Removing a worktree lists its uncommitted, untracked and ignored content before either
+question is asked — the path was never the thing at risk. Force-pushing runs `git push
+--dry-run` against the remote and names the commits the server would stop having, because
+`--force-with-lease` is decided against the server's current tip and a preview computed from
+local tracking refs would be confident and wrong in exactly the case the lease exists to
+catch. Pruning a remote shows the tracking refs that have gone from it. Deleting a branch
+names the commits that would be left with nothing pointing at them — a different question from
+the one `git branch -d` asks, which is why the app reports what it measured and still lets git
+decide.
+
+A preview is asked, not done: none of them go through the writer, so none appear in the
+operation log. The two that contact a server do so with the transfer left out and with
+credentials allowed, since a preview that only works against public remotes fails precisely
+when someone wanted to check. If one cannot run — no network, no permission — the dialog says
+so and stands on its own words rather than blocking the action.
+
+Discarding and dropping a stash get no preview and need none: the diff is already on screen for
+one, and the other restores exactly from its undo point.
 
 **Editing is conditional, and unsaved work is never overwritten.** The diff stays read-only
 — its left pane is a commit — while the code view becomes editable when the backend confirms
@@ -393,9 +522,24 @@ providers for it. Nothing above that seam is C#-specific.
 | `Ctrl` `T` | Go to symbol |
 | `Ctrl` `B` | Branches, stashes and tags |
 | `Ctrl` `Shift` `B` | Worktrees: add, move, lock, remove, prune |
+| `Ctrl` `Shift` `O` | Clone a repository |
+| `Ctrl` `O` | Add a repository already on disk |
+| `Tab` (refs panel) | Next section — branches, worktrees, stashes, tags, remotes, pull requests |
+| `→` `←` (refs panel) | The selected row's actions, then the buttons below it |
+| `A` (Worktrees panel) | Accept the selected agent worktree into main |
+| `R` (Worktrees panel) | Reject and reset the selected agent worktree |
+| `[` / `]` | Batch review: previous / next usable worktree |
+| `Ctrl` `Alt` `M` | Mark the current worktree reviewed |
+| `Ctrl` `H` | Commit history for this worktree |
+| `Ctrl` `F` | Search the open history timeline |
+| `Ctrl` `Shift` `H` | History for the open file |
+| `C` / `R` (history overlay) | Cherry-pick / revert the selected commit |
+| `Ctrl` `Alt` `B` | Toggle line blame in Code mode |
 | `F12` | Go to definition (C#) |
 | `Shift` `F12` | Find usages (C#) |
 | `Ctrl` `D` | Toggle diff / code |
+| `Ctrl` `\` | Toggle inline / side-by-side diff |
+| `Ctrl` `Shift` `E` | Open the current file in Rider or VS Code |
 | `Ctrl` `Shift` `V` | Toggle Markdown preview |
 | `Ctrl` `PgUp` `PgDn` | Cycle tabs |
 | `Ctrl` `W` | Close tab |
@@ -408,6 +552,25 @@ providers for it. Nothing above that seam is C#-specific.
 
 `Ctrl` `Z` is deliberately left to Monaco, where it means "undo my typing". Rewinding a
 commit is a much larger action and gets its own binding.
+
+`C` and `R` are contextual: they act only while the worktree history overlay has focus, so
+`R` remains the normal refresh shortcut everywhere else. Both actions ask for confirmation
+and show the selected commit before Git runs.
+
+A few of these are registered on the editor as well as on the window, because the editor
+otherwise swallows them: `Ctrl` `H` is Monaco's Replace, `Ctrl` `G` its Go to Line and
+`Ctrl` `Shift` `O` its Go to Symbol, while `Ctrl` `B` and `Ctrl` `Shift` `B` simply never
+arrived with the caret in a pane. Chapter's meanings win — the app has its own symbol search
+on `Ctrl` `T`, and an editor here is a review surface before it is a text editor. `Ctrl` `F`
+is the exception, left to Monaco's Find, which nothing else here replaces.
+
+**Every action in the refs panel has a key path.** `↑` `↓` move the selection and `Enter` uses
+the row, but a row also carries buttons — check out, compare, lock, push, delete — and `Tab` is
+spent cycling the panel's sections. So `→` steps out of the filter into the selected row's
+actions and then the buttons beneath the list, `←` walks back, and going off the front returns
+you to the filter with the caret where you left it. That is also what makes `A`, `R` and `L`
+usable: they are letters, the filter is a text box, and until there was a way to leave it they
+only worked after a mouse click had moved focus elsewhere.
 
 ## Commit message conventions
 
@@ -478,10 +641,7 @@ fail the whole request.
 
 ## Not in this version
 
-No build or test runner · no fetch/pull/push, and so no pushing a tag either · no merge or
-rebase · no conflict-resolution UI beyond detecting and listing conflicted files · no
-history or blame view · no cross-worktree comparison · no
-semantic (MSBuild) engine · no semantic navigation for languages other than C# — diff and
-browse work for everything Monaco tokenises.
+No build or test runner · no semantic (MSBuild) engine · no semantic navigation for languages
+other than C# — diff and browse work for everything Monaco tokenises.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for where those sit.
